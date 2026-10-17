@@ -1,0 +1,15 @@
+[package]
+name = "bike-mywhoosh"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+mdns-sd.workspace = true
+bike-protocol.workspace = true
+tracing.workspace = true

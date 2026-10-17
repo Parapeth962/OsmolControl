@@ -1,0 +1,25 @@
+[package]
+name = "bikecontrol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "osmolcontrol"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+eframe.workspace = true
+png = "0.18"
+egui.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+bike-core.workspace = true
+bike-gearing.workspace = true
+bike-protocol.workspace = true
+bike-session.workspace = true
+
+[lints]
+workspace = true

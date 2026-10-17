@@ -1,0 +1,22 @@
+[package]
+name = "bike-session"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+bike-ble.workspace = true
+bike-core.workspace = true
+bike-dircon.workspace = true
+bike-gearing.workspace = true
+bike-mywhoosh.workspace = true
+bike-protocol.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,98 @@
+name: Rust checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+env:
+  CORE: --workspace
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --locked $CORE --all-targets -- -D warnings
+      - run: cargo test --locked $CORE
+      - name: Package Linux binaries
+        run: |
+          cargo build --locked --release -p bikectl -p bikecontrol
+          mkdir -p dist/OsmolControl
+          cp target/release/osmolcontrol target/release/bikectl dist/OsmolControl/
+          tar -czf dist/OsmolControl-Linux-x86_64.tar.gz -C dist OsmolControl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OsmolControl-Linux
+          path: dist/OsmolControl-Linux-x86_64.tar.gz
+  windows-app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+      - run: cargo test --locked ${{ env.CORE }}
+      - name: Build and package
+        shell: pwsh
+        run: |
+          cargo build --locked --release -p bikectl -p bikecontrol
+          New-Item -ItemType Directory -Force dist/OsmolControl | Out-Null
+          Copy-Item target/release/osmolcontrol.exe dist/OsmolControl/OsmolControl.exe
+          Copy-Item target/release/bikectl.exe, packaging/windows/OsmolControl.bat, packaging/windows/README-windows.txt dist/OsmolControl/
+          dist/OsmolControl/bikectl.exe --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OsmolControl-Windows
+          path: dist/OsmolControl
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.0
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - run: cargo test --locked $CORE
+      - name: Build universal binary
+        run: |
+          cargo build --locked --release -p bikectl -p bikecontrol --target aarch64-apple-darwin
+          cargo build --locked --release -p bikectl -p bikecontrol --target x86_64-apple-darwin
+          mkdir -p dist/OsmolControl
+          for bin in bikectl osmolcontrol; do
+            lipo -create -output dist/OsmolControl/$bin \
+              target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
+            # Ad-hoc signature: required to run on Apple silicon; no developer account involved.
+            codesign --force --sign - dist/OsmolControl/$bin
+          done
+          cp packaging/macos/OsmolControl.command packaging/macos/README-mac.txt dist/OsmolControl/
+          chmod +x dist/OsmolControl/OsmolControl.command
+          dist/OsmolControl/bikectl --version
+          # Artifact zips drop the executable bit; a tarball keeps it.
+          tar -czf dist/OsmolControl-macOS.tar.gz -C dist OsmolControl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OsmolControl-macOS
+          path: dist/OsmolControl-macOS.tar.gz
+  # Tag a version (git tag v0.2.0 && git push --tags) to publish the three packages as a release.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows-app, macos-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Zip the Windows folder
+        run: cd artifacts && zip -qr OsmolControl-Windows.zip OsmolControl-Windows
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/OsmolControl-Windows.zip
+            artifacts/OsmolControl-macOS/OsmolControl-macOS.tar.gz
+            artifacts/OsmolControl-Linux/OsmolControl-Linux-x86_64.tar.gz

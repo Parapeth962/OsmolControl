@@ -1,0 +1,39 @@
+[workspace]
+resolver = "3"
+members = ["crates/bike-protocol", "crates/bike-gearing", "crates/bike-core", "crates/bike-ble", "crates/bike-mywhoosh", "crates/bike-dircon", "crates/bike-session", "apps/bikectl", "apps/bikecontrol"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "signal", "net", "io-util", "io-std", "test-util"] }
+btleplug = "0.11"
+futures = "0.3"
+uuid = { version = "1", features = ["v4", "serde"] }
+clap = { version = "4", features = ["derive"] }
+mdns-sd = "0.17"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bike-protocol = { path = "crates/bike-protocol" }
+bike-gearing = { path = "crates/bike-gearing" }
+bike-core = { path = "crates/bike-core" }
+bike-ble = { path = "crates/bike-ble" }
+bike-mywhoosh = { path = "crates/bike-mywhoosh" }
+bike-dircon = { path = "crates/bike-dircon" }
+bike-session = { path = "crates/bike-session" }
+egui = "0.31"
+eframe = { version = "0.31", features = ["glow", "persistence"] }
+egui_extras = "0.31"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
