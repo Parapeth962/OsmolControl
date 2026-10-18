@@ -13,8 +13,9 @@ or a 50-speed virtual ladder.
 
 - **Any FTMS smart trainer.** Found automatically; power and slope limits are read from the
   trainer. No brand-specific code.
-- **Shift controllers:** ThinkRider V100 built in, others addable with a small JSON file, plus
-  on-screen buttons and keyboard shortcuts.
+- **Shift controllers:** ThinkRider (V100, VS100, VS200), CYCPLUS BC2, Elite Square and
+  Shimano Di2 built in; teach it others with a few button presses; plus on-screen buttons and
+  keyboard shortcuts.
 - **Gear templates** for road, gravel (including 1×13 and 2×13), single speed and very wide
   virtual ladders, with brand/type/speed filters, search, favorites, custom setups you can
   save, and a gear calculator.
@@ -40,9 +41,10 @@ Details, screenshots and troubleshooting: **[docs/MANUAL.md](docs/MANUAL.md)**.
 
 - **Trainers:** anything that advertises the Bluetooth FTMS service (Wahoo, Elite, Tacx/Garmin,
   Saris, Zwift Hub, ThinkRider and others). Tested live with a ThinkRider X2 Max.
-- **Controllers:** ThinkRider V100 (tested live). Controllers that send one fixed message per
-  button press can be added through `controllers.json` ([manual, section 7](docs/MANUAL.md#7-other-shift-controllers)).
-  Encrypted protocols such as Zwift Click are not supported.
+- **Controllers:** ThinkRider V100 (tested live), VS100 and VS200; CYCPLUS BC2, Elite Square and
+  Shimano Di2 (D-Fly) from their published protocols. Controllers that send one fixed message
+  per button press can be learned in the **Controllers** tab ([manual, section 7](docs/MANUAL.md#7-shift-controllers)).
+  Zwift Click/Play/Ride and other encrypted or two-way protocols are not supported yet.
 - **MyWhoosh:** 5.7 and 6.2 tested, over LAN (Windows/macOS/other devices) and over Bluetooth
   on the same Linux PC.
 

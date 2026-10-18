@@ -120,6 +120,11 @@ impl Backend {
         }
     }
 
+    /// Run Bluetooth work for the UI (learning a controller) on the backend runtime.
+    pub fn spawn(&self, job: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.runtime.spawn(job);
+    }
+
     /// On-screen shift buttons and keyboard shortcuts use the same path as the controller.
     pub fn shift(&self, harder: bool) {
         let action = if harder {

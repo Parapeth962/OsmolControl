@@ -11,7 +11,7 @@ follows the gear you are in.
 - [4. The app, tab by tab](#4-the-app-tab-by-tab)
 - [5. Modes](#5-modes)
 - [6. Gears and templates](#6-gears-and-templates)
-- [7. Other shift controllers](#7-other-shift-controllers)
+- [7. Shift controllers](#7-shift-controllers)
 - [8. Troubleshooting](#8-troubleshooting)
 
 ## 1. What you need
@@ -19,9 +19,10 @@ follows the gear you are in.
 - **A smart trainer with standard FTMS** (Fitness Machine Service) over Bluetooth. Almost every
   current smart trainer has it: Wahoo, Elite, Tacx/Garmin, Saris, JetBlack, Zwift Hub,
   ThinkRider and others. Trainers that only speak ANT+ are not supported.
-- **Optional: a shift controller.** The ThinkRider V100 virtual cassette is recognised out of the
-  box; others can be added with a small text file ([section 7](#7-other-shift-controllers)).
-  Without one you shift with the on-screen buttons or the keyboard.
+- **Optional: a shift controller.** ThinkRider virtual shifters (V100, VS100, VS200), CYCPLUS
+  BC2, Elite Square and Shimano Di2 are recognised out of the box; others can be taught to the
+  app with a few button presses ([section 7](#7-shift-controllers)). Without one you shift with
+  the on-screen buttons or the keyboard.
 - **A computer with Bluetooth:** Windows 10/11, macOS 12 or newer, or Linux (Ubuntu, Fedora,
   Arch, CachyOS and similar).
 - **MyWhoosh**, either on the same computer or on another device (tablet, phone, PC) on the
@@ -125,6 +126,14 @@ Wayland, use your desktop's *Keep above others* window option if it does not sta
 - **Calculator:** every gear with teeth, ratio, metres per pedal turn, speed at 60 and 90 rpm,
   and the step to the next gear. The highlighted gear is where each ride starts.
 
+### Controllers
+
+- **Controller to use:** *Any supported controller* takes the first known controller that is
+  switched on. Pick one when several are nearby (for example a club setup).
+- **Supported controllers:** the built-in ones and the ones you taught the app (with *Remove*).
+- **Learn a new controller:** a short guided step for controllers that are not built in; see
+  [section 7](#7-shift-controllers).
+
 ### Settings
 
 ![Settings tab](images/settings.png)
@@ -133,7 +142,6 @@ Wayland, use your desktop's *Keep above others* window option if it does not sta
 - **Rider + bike:** total weight, used for the climbing feel.
 - **Network address:** leave on *Automatic* unless your computer has several networks.
 - **Bluetooth adapter:** only change with several Bluetooth adapters.
-- The folder for extra shift controller profiles is shown at the bottom.
 
 ### Log
 
@@ -175,17 +183,55 @@ Tips:
   chainring the trainer's flywheel spins slowly and may not reach the resistance of hard gears.
 - If the tooth counts of a template differ from your bike, use **Custom setup**.
 
-## 7. Other shift controllers
+## 7. Shift controllers
 
-OsmolControl is **not tied to one trainer or controller**:
+OsmolControl is **not tied to one trainer or controller**. Trainers: any trainer advertising
+standard FTMS is found automatically, and its power and slope limits are read from the trainer
+itself. Controllers: switch on any supported one and start the ride. To change controllers, just
+switch on the other one; the **Controllers** tab picks a specific one if several are on.
 
-- **Trainers:** any trainer advertising standard FTMS is found automatically; its power and
-  slope limits are read from the trainer itself. There is no brand-specific code.
-- **Controllers:** the ThinkRider V100 is built in. Any controller that sends one fixed
-  Bluetooth message per button press can be added without changing the program, by creating
-  `controllers.json` in the folder shown in **Settings**:
-  - Windows: `%APPDATA%\OsmolControl\controllers.json`
-  - macOS and Linux: `~/.config/osmolcontrol/controllers.json`
+### Built in
+
+| Controller | Notes |
+| --- | --- |
+| ThinkRider virtual shifters: V100, VS100, VS200 (name `THINK VS…`) | **+** is harder, **−** easier. Tested live with a V100. |
+| CYCPLUS BC2 | Left button harder, right easier. |
+| Elite Square (smart frame) | Shift button 1 on either lever is harder, shift button 2 easier. |
+| Shimano Di2 (via the rear derailleur, name `RDR…`) | In Shimano E-TUBE, assign your shift buttons to **D-Fly channel 1** (harder) and **channel 2** (easier). If Bluetooth asks for a PIN, pair it in the system Bluetooth settings first. |
+
+Only the ThinkRider V100 has been tested with real hardware; the others follow the published
+behaviour of the open-source BikeControl app. Please report whether yours works.
+
+Not supported yet: Zwift Click, Zwift Play, Zwift Ride and the Zwift Cog setup, SRAM AXS,
+L-TWOO, Wheeltop and Wahoo KICKR Bike. They use encrypted or two-way protocols, or the
+controller is also the trainer, and need dedicated code.
+
+### Teach the app a new controller
+
+Most simple remotes send the same Bluetooth message every time a button is pressed. Those can be
+learned without editing any file:
+
+1. Stop the ride, open the **Controllers** tab and press **Learn a controller...**
+2. Press a button on the controller to wake it while OsmolControl searches.
+3. Pick your controller from the list (nearest first; devices that are already supported are
+   marked).
+4. Press the **harder (+)** button three times, about a second apart, then **Next**.
+5. Press the **easier (−)** button three times, then **Next**.
+6. Check the name and **Save and use it**. The controller is used from the next ride.
+
+If learning says no message repeated, try once more with slow, single presses. If it fails
+again, the controller changes its messages with every press and needs built-in support.
+
+### Editing controllers.json by hand
+
+Learned controllers are stored in `controllers.json` (path shown in the **Controllers** tab):
+
+- Windows: `%APPDATA%\OsmolControl\controllers.json`
+- macOS and Linux: `~/.config/osmolcontrol/controllers.json`
+
+Your entries take priority over built-in ones with the same name prefix, so an entry can also
+change a built-in controller (for example to use other Di2 D-Fly channels). A learned entry
+looks like this; each message equal to `shift_up_hex` is one shift up:
 
 ```json
 [
@@ -199,12 +245,34 @@ OsmolControl is **not tied to one trainer or controller**:
 ]
 ```
 
-Find the values with the command line tool: `bikectl scan` shows the controller's advertised
-name (use its fixed beginning as `name_prefixes`), `bikectl inspect '<name>'` lists its
-characteristics, and `bikectl capture '<name>' '<characteristic>'` prints the bytes each press
-sends. Restart the ride after editing; the Log tab confirms how many profiles were loaded.
-Controllers with encrypted or press-and-hold protocols (for example Zwift Click/Play) need code
-support and cannot be added this way.
+Controllers that report which buttons are held use `buttons` instead of the `*_hex` fields. A
+shift happens when a button goes from released to pressed. Each button is a `mask` over the
+message's bytes from the first byte; with `value` it is pressed when the masked bits equal
+`value`, without it when any masked bit is set. This entry is the built-in Di2, moved to D-Fly
+channels 3 and 4:
+
+```json
+[
+  {
+    "label": "Di2 on channels 3 and 4",
+    "name_prefixes": ["RDR"],
+    "services": ["000018ef-5348-494d-414e-4f5f424c4500"],
+    "characteristic": "00002ac2-5348-494d-414e-4f5f424c4500",
+    "buttons": {
+      "shift_up": [{ "mask": "00000070" }],
+      "shift_down": [{ "mask": "0000000070" }],
+      "ignore_first_frame": true
+    }
+  }
+]
+```
+
+`services` matches controllers by an advertised Bluetooth service instead of the name, and
+`ignore_first_frame` treats the first message after connecting as the resting state. Restart
+the ride after editing; the Log tab says how many of your profiles were loaded, or why the file
+was ignored. To look at raw messages, use the command line tool: `bikectl scan`,
+`bikectl inspect '<name>'` and `bikectl capture '<name>' '<characteristic>'`
+([docs/cli.md](cli.md)).
 
 ## 8. Troubleshooting
 

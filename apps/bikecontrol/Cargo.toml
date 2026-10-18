@@ -19,6 +19,7 @@ tracing-subscriber.workspace = true
 bike-core.workspace = true
 bike-gearing.workspace = true
 bike-protocol.workspace = true
+bike-ble.workspace = true
 bike-session.workspace = true
 
 [lints]

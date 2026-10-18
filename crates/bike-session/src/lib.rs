@@ -106,6 +106,8 @@ pub struct Settings {
     pub my_setups: Vec<CustomGears>,
     /// Template ids starred by the user.
     pub favorites: Vec<String>,
+    /// Label of the one controller profile to look for; any known controller when `None`.
+    pub controller: Option<String>,
 }
 
 impl Default for Settings {
@@ -118,6 +120,7 @@ impl Default for Settings {
             bind: None,
             my_setups: Vec::new(),
             favorites: Vec::new(),
+            controller: None,
         }
     }
 }
@@ -393,30 +396,87 @@ pub fn controllers_file() -> Option<std::path::PathBuf> {
     Some(dir.join("controllers.json"))
 }
 
-/// Built-in profiles followed by the user's; a broken user file is reported and skipped.
-fn controller_profiles(status: &StatusTx) -> Vec<bike_core::ControllerProfile> {
+/// The user's profiles from [`controllers_file`]; none when the file does not exist yet.
+pub fn user_controllers() -> Result<Vec<bike_core::ControllerProfile>> {
+    read_controllers(&user_file()?)
+}
+
+/// Add `profile` to the user's file, replacing one with the same label. A broken file is an
+/// error rather than being overwritten.
+pub fn save_controller(profile: bike_core::ControllerProfile) -> Result<std::path::PathBuf> {
+    let path = user_file()?;
+    save_controller_in(&path, profile)?;
+    Ok(path)
+}
+
+/// Remove the user's profile called `label`.
+pub fn remove_controller(label: &str) -> Result<std::path::PathBuf> {
+    let path = user_file()?;
+    let mut profiles = read_controllers(&path)?;
+    profiles.retain(|p| p.label != label);
+    write_controllers(&path, &profiles)?;
+    Ok(path)
+}
+
+fn user_file() -> Result<std::path::PathBuf> {
+    controllers_file().ok_or_else(|| anyhow!("no config folder for controllers.json"))
+}
+
+fn read_controllers(path: &std::path::Path) -> Result<Vec<bike_core::ControllerProfile>> {
+    match std::fs::read_to_string(path) {
+        Ok(json) => {
+            bike_core::parse_controllers(&json).map_err(|e| anyhow!("{}: {e}", path.display()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(anyhow!("cannot read {}: {e}", path.display())),
+    }
+}
+
+fn save_controller_in(path: &std::path::Path, profile: bike_core::ControllerProfile) -> Result<()> {
+    profile.check().map_err(anyhow::Error::msg)?;
+    let mut profiles = read_controllers(path)?;
+    match profiles.iter_mut().find(|p| p.label == profile.label) {
+        Some(existing) => *existing = profile,
+        None => profiles.push(profile),
+    }
+    write_controllers(path, &profiles)
+}
+
+fn write_controllers(
+    path: &std::path::Path,
+    profiles: &[bike_core::ControllerProfile],
+) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    let json = serde_json::to_string_pretty(profiles)?;
+    std::fs::write(path, json + "\n").with_context(|| format!("write {}", path.display()))
+}
+
+/// User profiles first, so they can override a built-in one; a broken user file is reported
+/// and skipped. With `only`, just that profile (all of them if it no longer exists).
+fn controller_profiles(status: &StatusTx, only: Option<&str>) -> Vec<bike_core::ControllerProfile> {
     let mut profiles = bike_core::builtin_controllers();
-    let Some(path) = controllers_file() else {
-        return profiles;
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(json) => match bike_core::parse_controllers(&json) {
-            Ok(user) => {
-                log(
-                    status,
-                    format!(
-                        "Loaded {} controller profile(s) from {}.",
-                        user.len(),
-                        path.display()
-                    ),
-                );
-                // User profiles first, so they can override a built-in one.
-                profiles.splice(0..0, user);
-            }
-            Err(e) => log(status, format!("Ignoring {}: {e}", path.display())),
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => log(status, format!("Cannot read {}: {e}", path.display())),
+    match user_controllers() {
+        Ok(user) if user.is_empty() => {}
+        Ok(user) => {
+            log(
+                status,
+                format!("Loaded {} controller profile(s) of your own.", user.len()),
+            );
+            profiles.splice(0..0, user);
+        }
+        Err(e) => log(status, format!("Ignoring your controller profiles: {e:#}")),
+    }
+    if let Some(label) = only {
+        if profiles.iter().any(|p| p.label == label) {
+            profiles.retain(|p| p.label == label);
+        } else {
+            log(
+                status,
+                format!("Controller {label:?} is no longer defined; looking for any known one."),
+            );
+        }
     }
     profiles
 }
@@ -523,7 +583,7 @@ async fn session(
         status,
         "Looking for your controller... press any button on it to wake it up.",
     );
-    let profiles = controller_profiles(status);
+    let profiles = controller_profiles(status, settings.controller.as_deref());
     let controller = loop {
         if *waiting.borrow() {
             return Ok(());
@@ -704,6 +764,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn learned_controllers_are_saved_replaced_and_kept_safe() {
+        let dir = std::env::temp_dir().join(format!("osmol-controllers-{}", std::process::id()));
+        let path = dir.join("nested").join("controllers.json");
+        let profile = |label: &str, up: &str| bike_core::ControllerProfile {
+            label: label.into(),
+            name_prefixes: vec!["ACME".into()],
+            services: Vec::new(),
+            characteristic: "0000aaaa-0000-1000-8000-00805f9b34fb".into(),
+            shift_up_hex: up.into(),
+            shift_down_hex: "02".into(),
+            buttons: None,
+            evidence: String::new(),
+        };
+        assert!(read_controllers(&path).is_ok_and(|p| p.is_empty()));
+        assert!(save_controller_in(&path, profile("A", "01")).is_ok());
+        assert!(save_controller_in(&path, profile("B", "01")).is_ok());
+        assert!(save_controller_in(&path, profile("A", "03")).is_ok());
+        let saved = read_controllers(&path).unwrap_or_default();
+        assert_eq!(saved, vec![profile("A", "03"), profile("B", "01")]);
+        // Invalid profiles are refused, and a hand-edited broken file is never overwritten.
+        assert!(save_controller_in(&path, profile("C", "02")).is_err());
+        assert!(std::fs::write(&path, "[{").is_ok());
+        assert!(save_controller_in(&path, profile("D", "01")).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "[{");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn default_settings_round_trip_and_build_gears() {
         let s = Settings::default();
         let json = serde_json::to_string(&s).unwrap_or_default();
@@ -711,6 +799,7 @@ mod tests {
         assert_eq!(back, s);
         let partial: Settings = serde_json::from_str(r#"{"mass_kg": 70.0}"#).unwrap_or_default();
         assert_eq!((partial.mass_kg, partial.mode), (70.0, Mode::OsmolGears));
+        assert_eq!(partial.controller, None);
         assert!(s.drivetrain().is_ok());
         let custom = Settings {
             gears: GearSource::Custom(CustomGears {

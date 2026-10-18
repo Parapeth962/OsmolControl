@@ -77,15 +77,6 @@ pub fn show(
         )
         .color(MUTED),
     );
-    if let Some(path) = bike_session::controllers_file() {
-        ui.label(
-            RichText::new(format!(
-                "Other shift controllers: describe them in {} (see the manual).",
-                path.display()
-            ))
-            .color(MUTED),
-        );
-    }
     ui.separator();
     if ui.button("Reset to defaults").clicked() {
         *settings = Settings::default();

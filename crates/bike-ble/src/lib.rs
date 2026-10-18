@@ -158,14 +158,95 @@ pub async fn find_known_controller(
 ) -> Result<Option<(Peripheral, bike_core::ControllerProfile, String)>> {
     let _ = scan(a, seconds).await?;
     for p in bounded("list peripherals", a.peripherals()).await? {
-        let props = bounded("read advertisement", p.properties()).await?;
-        if let Some(name) = props.and_then(|v| v.local_name)
-            && let Some(profile) = bike_core::controller_profile(profiles, &name)
-        {
+        let Some(props) = bounded("read advertisement", p.properties()).await? else {
+            continue;
+        };
+        let services: Vec<String> = props.services.iter().map(Uuid::to_string).collect();
+        let name = props.local_name.unwrap_or_default();
+        if let Some(profile) = bike_core::controller_profile(profiles, &name, &services) {
+            let name = if name.is_empty() {
+                p.id().to_string()
+            } else {
+                name
+            };
             return Ok(Some((p, profile.clone(), name)));
         }
     }
     Ok(None)
+}
+/// A device seen in a scan, for picking a controller to learn.
+#[derive(Clone)]
+pub struct Nearby {
+    pub peripheral: Peripheral,
+    pub name: String,
+    pub services: Vec<String>,
+    pub rssi: Option<i16>,
+}
+/// One bounded scan; named devices only, strongest signal first.
+pub async fn nearby(a: &Adapter, seconds: u64) -> Result<Vec<Nearby>> {
+    let _ = scan(a, seconds).await?;
+    let mut found = vec![];
+    for p in bounded("list peripherals", a.peripherals()).await? {
+        if let Some(props) = bounded("read advertisement", p.properties()).await?
+            && let Some(name) = props.local_name.filter(|n| !n.trim().is_empty())
+        {
+            found.push(Nearby {
+                peripheral: p,
+                name,
+                services: props.services.iter().map(Uuid::to_string).collect(),
+                rssi: props.rssi,
+            });
+        }
+    }
+    found.sort_by_key(|n| std::cmp::Reverse(n.rssi.unwrap_or(i16::MIN)));
+    Ok(found)
+}
+/// Subscribe to every notifying characteristic and forward (characteristic, bytes) until
+/// `stop`, for learning an unknown controller; `ready` fires once subscribed. Read-only like
+/// the monitor.
+pub async fn listen_all(
+    p: &Peripheral,
+    tx: mpsc::UnboundedSender<(String, Vec<u8>)>,
+    ready: tokio::sync::oneshot::Sender<()>,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
+    let result = async {
+        connect(p).await?;
+        let mut notifications = bounded("notification stream", p.notifications()).await?;
+        let mut count = 0;
+        for c in p.characteristics() {
+            if c.properties
+                .intersects(CharPropFlags::NOTIFY | CharPropFlags::INDICATE)
+            {
+                bounded("subscribe", p.subscribe(&c)).await?;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            bail!("this device sends no notifications, so it cannot be a supported controller");
+        }
+        let _ = ready.send(());
+        let mut health = tokio::time::interval(Duration::from_secs(2));
+        loop {
+            tokio::select! {
+                _ = stop.changed() => return Ok(()),
+                n = notifications.next() => {
+                    let n = n.ok_or_else(|| anyhow!("notification stream ended"))?;
+                    if tx.send((n.uuid.to_string(), n.value)).is_err() {
+                        return Ok(());
+                    }
+                }
+                _ = health.tick() => {
+                    if !bounded("connection health", p.is_connected()).await? {
+                        bail!("device disconnected");
+                    }
+                }
+            }
+        }
+    }
+    .await;
+    let _ = bounded("disconnect", release(p)).await;
+    result
 }
 fn standard_id(uuid: Uuid) -> Option<u16> {
     let s = uuid.to_string();
@@ -231,6 +312,8 @@ async fn session(
     signals: &mut SessionSignals,
 ) -> Result<()> {
     connect(p).await?;
+    // Button-state decoders remember pressed buttons; start each connection released.
+    let mut decoder = mapping.cloned();
     let custom = mapping
         .map(|m| Uuid::parse_str(&m.characteristic))
         .transpose()
@@ -274,7 +357,7 @@ async fn session(
             n=notifications.next()=>{
                 let n=n.ok_or_else(||anyhow!("notification stream ended"))?;last=tokio::time::Instant::now();stale=false;
                 emit(tx,json!({"device":id,"event":"measurement","timestamp_ms":timestamp_ms(),"characteristic":n.uuid,"raw_hex":bike_protocol::hex(&n.value),"value":decode(n.uuid,&n.value)})).await;
-                if custom==Some(n.uuid) && let Some(action)=mapping.and_then(|m|m.decode(&n.value)){
+                if custom==Some(n.uuid) && let Some(action)=decoder.as_mut().and_then(|m|m.decode(&n.value)){
                     tracing::debug!(device=%id, ?action, raw=%bike_protocol::hex(&n.value), "controller action");
                     emit(tx,json!({"device":id,"event":"controller_action","action":action,"timestamp_ms":timestamp_ms()})).await;
                     if let Some(sender)=actions{let _=sender.send((Instant::now(),action));}

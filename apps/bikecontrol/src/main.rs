@@ -4,6 +4,7 @@
 
 mod backend;
 mod capture;
+mod controllers;
 mod gears;
 mod overlay;
 mod ride;
@@ -45,6 +46,7 @@ fn main() -> eframe::Result<()> {
         .map(String::as_str)
     {
         Some("gears") => Tab::Gears,
+        Some("controllers") => Tab::Controllers,
         Some("settings") => Tab::Settings,
         Some("log") => Tab::Log,
         _ => Tab::Ride,
@@ -86,6 +88,7 @@ fn main() -> eframe::Result<()> {
                 tab,
                 overlay,
                 gears: gears::GearsTab::default(),
+                controllers: controllers::ControllersTab::default(),
                 demo,
                 capture: capture::Capture::new(screenshot),
                 overlay_preview,
@@ -109,6 +112,7 @@ fn apply_theme(ctx: &egui::Context) {
 enum Tab {
     Ride,
     Gears,
+    Controllers,
     Settings,
     Log,
 }
@@ -119,6 +123,7 @@ struct App {
     tab: Tab,
     overlay: bool,
     gears: gears::GearsTab,
+    controllers: controllers::ControllersTab,
     demo: bool,
     capture: capture::Capture,
     overlay_preview: bool,
@@ -169,6 +174,7 @@ impl App {
             for (tab, label) in [
                 (Tab::Ride, "Ride"),
                 (Tab::Gears, "Gears"),
+                (Tab::Controllers, "Controllers"),
                 (Tab::Settings, "Settings"),
                 (Tab::Log, "Log"),
             ] {
@@ -212,6 +218,10 @@ impl eframe::App for App {
                 .show(ui, |ui| match self.tab {
                     Tab::Ride => ride::show(ui, &status, &self.backend, running),
                     Tab::Gears => self.gears.show(ui, &mut self.settings, running),
+                    Tab::Controllers => {
+                        self.controllers
+                            .show(ui, &mut self.settings, &self.backend, running)
+                    }
                     Tab::Settings => settings::show(
                         ui,
                         &mut self.settings,
