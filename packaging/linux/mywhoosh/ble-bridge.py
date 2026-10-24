@@ -5,9 +5,13 @@ Bluetooth trainer.
 MyWhoosh's LAN (DirCon) path cannot work under Wine: it discovers trainers through Bonjour
 COM events, which wine-mono does not implement. Its Bluetooth path goes through the Lutris
 "bleshim" (MyWhooshShim.dll), which forwards GATT operations as newline-delimited JSON to a
-helper on 127.0.0.1:27019. This is that helper, but instead of BlueZ it offers one virtual
+helper on 127.0.0.1:27019. This is that helper, but instead of BlueZ it offers a virtual
 device and relays every GATT operation to a DirCon server on this PC, which already presents the
 trainer's GATT table. The real Bluetooth adapter stays with the DirCon app alone.
+
+When the DirCon table also has a Heart Rate service (OsmolControl with a heart rate strap), a
+second virtual device "<name> HR" offers it, so MyWhoosh pairs it as a separate heart rate
+sensor. Each virtual device has its own DirCon session, so unpairing one never drops the other.
 
 Shim requests:  {"id":N,"op":"radios"|"scan"|"connect"|"disconnect"|"services"|"chars"|
                  "read"|"write"|"notify", ...}
@@ -24,9 +28,13 @@ import threading
 import time
 import uuid
 
-ADDR = "0E:57:00:00:00:01"
-ADVERTISED = ["00001826-0000-1000-8000-00805f9b34fb", "00001818-0000-1000-8000-00805f9b34fb"]
-RADIO = {"name": "hci0", "address": ADDR, "powered": True}
+TRAINER = "0E:57:00:00:00:01"
+HEART_RATE = "0E:57:00:00:00:02"
+FTMS = "00001826-0000-1000-8000-00805f9b34fb"
+CYCLING_POWER = "00001818-0000-1000-8000-00805f9b34fb"
+HR_SERVICE = "0000180d-0000-1000-8000-00805f9b34fb"
+RADIO = {"name": "hci0", "address": TRAINER, "powered": True}
+PROBE_INTERVAL = 15.0
 DIRCON_PORT = 36866
 TIMEOUT = 5.0
 FLAGS = [(0x01, "read"), (0x02, "write"), (0x04, "notify"), (0x08, "indicate")]
@@ -102,6 +110,10 @@ class DirCon:
         self.on_closed()
 
 
+def service_list(body):
+    return [str(uuid.UUID(bytes=body[i:i + 16])) for i in range(0, len(body) - 15, 16)]
+
+
 class Session:
     """The shim's connection: answers its requests and forwards events to it."""
 
@@ -110,8 +122,10 @@ class Session:
         self.dircon_address = dircon_address
         self.name = name
         self.send_lock = threading.Lock()
-        self.dircon = None
+        self.links = {}                     # virtual device address -> DirCon session
         self.scanning = False
+        self.has_hr = False
+        self.probed_at = 0.0
 
     def send(self, message):
         data = (json.dumps(message) + "\n").encode()
@@ -128,27 +142,53 @@ class Session:
         except OSError:
             return False
 
+    def probe(self):
+        """Whether the DirCon table has a Heart Rate service, rechecked now and then; a ride
+        restarted with or without a strap changes it. Uses a session open for a device if any."""
+        if time.monotonic() - self.probed_at < PROBE_INTERVAL:
+            return
+        self.probed_at = time.monotonic()
+        try:
+            link = next(iter(self.links.values()), None)
+            if link is not None:
+                body = link.request(0x01)
+            else:
+                link = DirCon(*self.dircon_address, lambda *_: None, lambda: None)
+                try:
+                    body = link.request(0x01)
+                finally:
+                    link.close()
+        except (BridgeError, OSError):
+            return
+        has_hr = HR_SERVICE in service_list(body)
+        if has_hr != self.has_hr:
+            log("heart rate sensor " + ("offered" if has_hr else "gone"))
+        self.has_hr = has_hr
+
     def advertise(self):
         """Advertise while the game scans and the DirCon server is reachable."""
         while self.scanning:
-            if self.dircon is not None or self.dircon_up():
-                self.send({"ev": "advert", "addr": ADDR, "name": self.name, "uuids": ADVERTISED,
-                           "rssi": -40})
+            if self.links or self.dircon_up():
+                self.probe()
+                self.send({"ev": "advert", "addr": TRAINER, "name": self.name,
+                           "uuids": [FTMS, CYCLING_POWER], "rssi": -40})
+                if self.has_hr:
+                    self.send({"ev": "advert", "addr": HEART_RATE, "name": f"{self.name} HR",
+                               "uuids": [HR_SERVICE], "rssi": -40})
             time.sleep(2)
 
-    def on_value(self, char, value):
-        self.send({"ev": "value", "addr": ADDR, "char": char, "value": value.hex()})
+    def on_value(self, addr, char, value):
+        self.send({"ev": "value", "addr": addr, "char": char, "value": value.hex()})
 
-    def on_closed(self):
-        if self.dircon is not None:
-            self.dircon = None
-            log("DirCon connection closed")
-            self.send({"ev": "connection", "addr": ADDR, "connected": False})
+    def on_closed(self, addr):
+        if self.links.pop(addr, None) is not None:
+            log(f"DirCon connection of {addr} closed")
+            self.send({"ev": "connection", "addr": addr, "connected": False})
 
-    def link(self):
-        if self.dircon is None:
+    def link(self, addr):
+        if addr not in self.links:
             raise BridgeError("not connected")
-        return self.dircon
+        return self.links[addr]
 
     def dispatch(self, op, req):
         if op == "radios":
@@ -161,29 +201,33 @@ class Session:
             elif not enable:
                 self.scanning = False
             return {}
-        if (req.get("addr") or "").upper() != ADDR:
+        addr = (req.get("addr") or "").upper()
+        if addr not in (TRAINER, HEART_RATE):
             raise BridgeError("unknown device")
+        name = self.name if addr == TRAINER else f"{self.name} HR"
         if op == "connect":
-            if self.dircon is None:
+            if addr not in self.links:
                 try:
-                    self.dircon = DirCon(*self.dircon_address, self.on_value, self.on_closed)
+                    self.links[addr] = DirCon(*self.dircon_address,
+                                              lambda c, v: self.on_value(addr, c, v),
+                                              lambda: self.on_closed(addr))
                 except OSError as e:
                     raise BridgeError(f"no DirCon trainer at {self.dircon_address}: {e}")
-                log("connected to the DirCon trainer")
-            return {"name": self.name}
+                log(f"{name}: connected to the DirCon server")
+            return {"name": name}
         if op == "disconnect":
-            if self.dircon is not None:
-                d, self.dircon = self.dircon, None
+            if (d := self.links.pop(addr, None)) is not None:
                 d.close()
             return {}
         if op == "services":
-            body = self.link().request(0x01)
-            return {"services": [{"uuid": str(uuid.UUID(bytes=body[i:i + 16]))}
-                                 for i in range(0, len(body) - 15, 16)]}
+            services = service_list(self.link(addr).request(0x01))
+            if addr == HEART_RATE:
+                services = [s for s in services if s == HR_SERVICE]
+            return {"services": [{"uuid": s} for s in services]}
         char = req.get("char") or ""
         if op == "chars":
             service = uuid.UUID(req.get("service") or "").bytes
-            body = self.link().request(0x02, service)[16:]
+            body = self.link(addr).request(0x02, service)[16:]
             chars = []
             for i in range(0, len(body) - 16, 17):
                 props = body[i + 16]
@@ -191,14 +235,14 @@ class Session:
                               "flags": [name for bit, name in FLAGS if props & bit]})
             return {"chars": chars}
         if op == "read":
-            return {"value": self.link().request(0x03, uuid.UUID(char).bytes)[16:].hex()}
+            return {"value": self.link(addr).request(0x03, uuid.UUID(char).bytes)[16:].hex()}
         if op == "write":
             value = bytes.fromhex(req.get("value") or "")
-            self.link().request(0x04, uuid.UUID(char).bytes + value)
+            self.link(addr).request(0x04, uuid.UUID(char).bytes + value)
             return {}
         if op == "notify":
             on = 1 if req.get("enable") else 0
-            self.link().request(0x05, uuid.UUID(char).bytes + bytes([on]))
+            self.link(addr).request(0x05, uuid.UUID(char).bytes + bytes([on]))
             return {}
         raise BridgeError(f"unknown op {op!r}")
 
@@ -228,8 +272,9 @@ class Session:
         except OSError:
             pass
         self.scanning = False
-        if self.dircon is not None:
-            self.dircon.close()
+        for d in list(self.links.values()):
+            d.close()
+        self.links.clear()
         self.conn.close()
 
 

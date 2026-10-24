@@ -49,6 +49,20 @@ pub fn mirror(snapshot: &Snapshot) -> Gatt {
     Gatt { services }
 }
 
+pub const HEART_RATE_MEASUREMENT: Uuid = sig(0x2a37);
+
+/// Heart Rate service carrying the strap's measurements unchanged.
+pub fn heart_rate_service() -> Service {
+    Service {
+        uuid: sig(0x180d),
+        characteristics: vec![Characteristic {
+            uuid: HEART_RATE_MEASUREMENT,
+            properties: gatt::NOTIFY,
+            value: vec![],
+        }],
+    }
+}
+
 use crate::{Control as Mode, GearInfo, StatusTx};
 
 /// Cadence older than this is treated as unknown (the rider stopped or the trainer went quiet).
@@ -396,6 +410,15 @@ mod tests {
                 .iter()
                 .all(|c| c.uuid != sig(0x2a66))
         );
+    }
+
+    #[test]
+    fn heart_rate_service_only_notifies() {
+        let s = heart_rate_service();
+        assert_eq!(s.uuid, sig(0x180d));
+        assert_eq!(s.characteristics.len(), 1);
+        assert_eq!(s.characteristics[0].uuid, HEART_RATE_MEASUREMENT);
+        assert_eq!(s.characteristics[0].properties, gatt::NOTIFY);
     }
 
     fn router(shifting: bool) -> Router {

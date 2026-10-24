@@ -209,6 +209,8 @@ pub struct Status {
     pub address: Option<Ipv4Addr>,
     pub trainer: Device,
     pub controller: Device,
+    /// Heart rate strap; its readings go to MyWhoosh through the virtual trainer.
+    pub heart_rate: Device,
     /// MyWhoosh connections to the virtual trainer and to the controller service.
     pub app_trainer_links: usize,
     pub app_controller_links: usize,
@@ -216,6 +218,8 @@ pub struct Status {
     pub cadence_rpm: Option<f64>,
     pub speed_kmh: Option<f64>,
     pub telemetry_at: Option<Instant>,
+    pub heart_rate_bpm: Option<u16>,
+    pub heart_rate_at: Option<Instant>,
     pub gearing_name: Option<String>,
     pub gear: Option<GearInfo>,
     pub control: Control,
@@ -232,6 +236,12 @@ impl Status {
     pub fn telemetry_fresh(&self) -> bool {
         self.telemetry_at
             .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+    }
+
+    /// Heart rate is shown only while fresh.
+    pub fn heart_rate_fresh(&self) -> bool {
+        self.heart_rate_at
+            .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
     }
 }
 
@@ -494,6 +504,7 @@ pub async fn run(
         s.phase = Phase::Stopped;
         s.trainer.connected = false;
         s.controller.connected = false;
+        s.heart_rate.connected = false;
         s.app_trainer_links = 0;
         s.app_controller_links = 0;
         s.error = result.as_ref().err().map(|e| format!("{e:#}"));
@@ -601,6 +612,30 @@ async fn session(
         log(status, "Still looking for a controller.");
     };
 
+    // Optional: one scan, and the ride goes on without a strap.
+    let strap = if trainer.is_some() {
+        match bike_ble::find_heart_rate(&adapter, 5).await {
+            Ok(Some((p, name))) => {
+                log(status, format!("Found heart rate sensor {name}."));
+                status.send_modify(|s| s.heart_rate.name = Some(name));
+                Some(p)
+            }
+            Ok(None) => {
+                log(
+                    status,
+                    "No heart rate sensor found; continuing without one.",
+                );
+                None
+            }
+            Err(e) => {
+                log(status, format!("Heart rate sensor search failed: {e:#}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut jobs = JoinSet::new();
     let shifting = shifter.is_some();
     if let Some((peripheral, profile, name)) = controller {
@@ -694,7 +729,11 @@ async fn session(
             serial: "1".into(),
             advertise: true,
         };
-        let gatt = bridge::mirror(&snapshot);
+        let mut gatt = bridge::mirror(&snapshot);
+        if let Some(p) = strap {
+            gatt.services.push(bridge::heart_rate_service());
+            heart_rate(&mut jobs, status, p, to_app.clone(), stopped.clone());
+        }
         let (active, links) = watch::channel(0);
         watch_links(&mut jobs, status, links, |s, n| s.app_trainer_links = n);
         let (s, r) = (stop.clone(), stopped.clone());
@@ -738,6 +777,56 @@ async fn session(
     }
     firewall_hint(status, address, mode);
     finish(jobs, stop).await
+}
+
+/// Relay the strap's measurements to the app. Losing the strap is logged and never ends the ride.
+fn heart_rate(
+    jobs: &mut JoinSet<Result<()>>,
+    status: &StatusTx,
+    strap: bike_ble::Peripheral,
+    to_app: broadcast::Sender<(uuid::Uuid, Vec<u8>)>,
+    stop: watch::Receiver<bool>,
+) {
+    let (events, mut event_rx) = mpsc::channel(64);
+    let monitor_status = status.clone();
+    jobs.spawn(async move {
+        if let Err(e) = bike_ble::monitor(strap, events, None, None, stop).await {
+            log(&monitor_status, format!("Heart rate sensor lost: {e:#}"));
+        }
+        Ok(())
+    });
+    let status = status.clone();
+    jobs.spawn(async move {
+        while let Some(e) = event_rx.recv().await {
+            match e["event"].as_str() {
+                Some("connected") => {
+                    status.send_modify(|s| s.heart_rate.connected = true);
+                    log(&status, "Heart rate sensor connected.");
+                }
+                Some("disconnected") => {
+                    status.send_modify(|s| s.heart_rate.connected = false);
+                    log(&status, "Heart rate sensor disconnected; reconnecting...");
+                }
+                Some("measurement") => {
+                    if let Some(bpm) = e["value"]["heart_rate_bpm"].as_u64() {
+                        status.send_modify(|s| {
+                            s.heart_rate_bpm = u16::try_from(bpm).ok();
+                            s.heart_rate_at = Some(Instant::now());
+                        });
+                    }
+                    if e["characteristic"].as_str()
+                        == Some(&bridge::HEART_RATE_MEASUREMENT.to_string())
+                        && let Some(raw) = e["raw_hex"].as_str()
+                        && let Ok(bytes) = bike_protocol::unhex(raw)
+                    {
+                        let _ = to_app.send((bridge::HEART_RATE_MEASUREMENT, bytes));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    });
 }
 
 async fn finish(mut jobs: JoinSet<Result<()>>, stop: watch::Sender<bool>) -> Result<()> {

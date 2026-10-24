@@ -23,6 +23,8 @@ follows the gear you are in.
   BC2, Elite Square and Shimano Di2 are recognised out of the box; others can be taught to the
   app with a few button presses ([section 7](#7-shift-controllers)). Without one you shift with
   the on-screen buttons or the keyboard.
+- **Optional: a Bluetooth heart rate strap** (any standard one, e.g. Magene H303, Garmin HRM,
+  Polar H10). OsmolControl passes your heart rate on to MyWhoosh.
 - **A computer with Bluetooth:** Windows 10/11, macOS 12 or newer, or Linux (Ubuntu, Fedora,
   Arch, CachyOS and similar).
 - **MyWhoosh**, either on the same computer or on another device (tablet, phone, PC) on the
@@ -83,6 +85,10 @@ Proton on the same PC, with desktop and menu shortcuts and automatic game update
      the Power Source (trainer).
    - MyWhoosh on the same Linux PC (installed by `install.sh`): tap **BLE** and choose
      **OsmolControl** as the Power Source.
+   - **Heart rate:** put the strap on (moisten the electrodes) *before* pressing Start ride;
+     OsmolControl looks for it once, right after the controller. On Linux pick **OsmolControl
+     HR** as the Heart Rate source under **BLE**. Over LAN MyWhoosh may offer **OsmolControl**
+     itself as the heart rate source (not tested yet).
 6. **Turn off Virtual Shifting in MyWhoosh's settings**, so only one app shifts.
 7. **Ride.** Shift with the controller, the **− Easier / Harder +** buttons, or the
    **Up/Down** (or **+/−**) keys. The resistance follows the gear and MyWhoosh's road.
@@ -99,7 +105,9 @@ Proton on the same PC, with desktop and menu shortcuts and automatic game update
 - **Power, Cadence, Speed:** live from the trainer. **Grade** is MyWhoosh's current road slope,
   **Target** the power OsmolControl asks the trainer for. **Mode** shows *Road* (gears
   active) or *ERG* (MyWhoosh's workout sets the power; gears pause).
-- **Connections:** trainer, controller (with battery) and MyWhoosh, green when connected.
+- **Heart rate:** from your strap, shown when one was found.
+- **Connections:** trainer, controller (with battery), heart rate strap and MyWhoosh, green
+  when connected.
 - **In MyWhoosh:** the pairing steps for the selected mode.
 
 ### Overlay

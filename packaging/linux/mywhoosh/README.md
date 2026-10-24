@@ -11,4 +11,5 @@ whose README documents the design, commands and troubleshooting. Keep both copie
 
 Ride: start **MyWhoosh** from the desktop or menu (OsmolControl opens too), press **Start ride**
 in OsmolControl, then in MyWhoosh choose **Device Connection → BLE → Power Source →
-OsmolControl**. Turn MyWhoosh's Virtual Shifting off and ride the big chainring.
+OsmolControl**. With a heart rate strap (worn before Start ride), also choose
+**Heart Rate → OsmolControl HR**. Turn MyWhoosh's Virtual Shifting off and ride the big chainring.

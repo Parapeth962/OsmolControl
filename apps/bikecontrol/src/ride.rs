@@ -192,6 +192,18 @@ pub fn show(ui: &mut egui::Ui, status: &Status, backend: &Backend, running: bool
                 };
                 metric(ui, "Mode", Some(control.into()), "");
                 ui.end_row();
+                if status.heart_rate.name.is_some() {
+                    metric(
+                        ui,
+                        "Heart rate",
+                        status
+                            .heart_rate_bpm
+                            .filter(|_| status.heart_rate_fresh())
+                            .map(|b| b.to_string()),
+                        "bpm",
+                    );
+                    ui.end_row();
+                }
             });
         if status.mode == Mode::ControllerOnly {
             ui.label(RichText::new("In this mode MyWhoosh owns the trainer, so live numbers are shown in MyWhoosh.").color(MUTED));
@@ -217,6 +229,14 @@ pub fn show(ui: &mut egui::Ui, status: &Status, backend: &Backend, running: bool
             (n, b) => n.clone().or(b),
         };
         dot(ui, status.controller.connected, "Controller", detail);
+        if status.heart_rate.name.is_some() {
+            dot(
+                ui,
+                status.heart_rate.connected,
+                "Heart rate",
+                status.heart_rate.name.clone(),
+            );
+        }
         let whoosh = status.app_trainer_links > 0 || status.app_controller_links > 0;
         let detail = status.address.map(|a| format!("serving on {a}"));
         dot(ui, whoosh, "MyWhoosh", detail);

@@ -238,12 +238,45 @@ pub fn csc(bytes: &[u8]) -> Result<Value, DecodeError> {
     c.finish()?;
     Ok(Value::Object(o))
 }
+/// Heart Rate Measurement (0x2A37): beats per minute plus optional energy and RR intervals.
+pub fn heart_rate(bytes: &[u8]) -> Result<Value, DecodeError> {
+    let mut c = Cursor::new(bytes);
+    let f = c.u8()?;
+    if f & !0x1f != 0 {
+        return Err(DecodeError::Invalid("reserved heart rate flags"));
+    }
+    let bpm = if f & 1 != 0 {
+        c.u16()?
+    } else {
+        u16::from(c.u8()?)
+    };
+    let mut o = Map::new();
+    o.insert("flags".into(), json!(f));
+    o.insert("heart_rate_bpm".into(), json!(bpm));
+    // Bit 2: contact detection supported; bit 1: contact detected.
+    if f & 4 != 0 {
+        o.insert("sensor_contact".into(), json!(f & 2 != 0));
+    }
+    if f & 8 != 0 {
+        o.insert("energy_expended_kj".into(), json!(c.u16()?));
+    }
+    if f & 16 != 0 {
+        let mut rr = vec![];
+        while c.pos < bytes.len() {
+            rr.push(c.u16()?);
+        }
+        o.insert("rr_1024hz".into(), json!(rr));
+    }
+    c.finish()?;
+    Ok(Value::Object(o))
+}
 /// Decode a standard 16-bit Bluetooth characteristic, preserving unknown data as hex.
 pub fn characteristic(id: u16, bytes: &[u8]) -> Result<Value, DecodeError> {
     match id {
         0x2ad2 => indoor_bike(bytes),
         0x2a63 => cycling_power(bytes),
         0x2a5b => csc(bytes),
+        0x2a37 => heart_rate(bytes),
         0x2a19 => {
             let mut c = Cursor::new(bytes);
             let n = c.u8()?;
@@ -451,6 +484,20 @@ mod tests {
         assert_eq!(v["power_w"], 250);
         assert_eq!(v["crank_event_1024hz"], 1024);
         assert_eq!(v["crank_revolutions"], 65535);
+    }
+    #[test]
+    fn heart_rate_formats() {
+        let v = heart_rate(&[0x06, 72]).unwrap();
+        assert_eq!(v["heart_rate_bpm"], 72);
+        assert_eq!(v["sensor_contact"], true);
+        let v = heart_rate(&[0x19, 0x2c, 0x01, 0x0a, 0, 0x00, 0x04, 0x10, 0x03]).unwrap();
+        assert_eq!(v["heart_rate_bpm"], 300);
+        assert_eq!(v["energy_expended_kj"], 10);
+        assert_eq!(v["rr_1024hz"], json!([1024, 784]));
+        assert!(v.get("sensor_contact").is_none());
+        assert!(heart_rate(&[0x01, 60]).is_err());
+        assert!(heart_rate(&[0x10, 60, 1]).is_err());
+        assert!(heart_rate(&[0x20, 60]).is_err());
     }
     #[test]
     fn malformed_packets() {

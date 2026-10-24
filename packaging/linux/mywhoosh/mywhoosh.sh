@@ -246,7 +246,7 @@ cmd_update() {
 }
 
 desktop_entry() {
-    local file="$1" name="$2" comment="$3" exec="$4" icon="$5" categories="$6"
+    local file="$1" name="$2" comment="$3" exec="$4" icon="$5" categories="$6" wmclass="${7:-}"
     cat >"$file" <<EOF
 [Desktop Entry]
 Type=Application
@@ -256,6 +256,7 @@ Exec=$exec
 Icon=$icon
 Categories=$categories
 Terminal=false
+${wmclass:+StartupWMClass=$wmclass}
 EOF
     chmod +x "$file"
 }
@@ -274,8 +275,10 @@ install_shortcuts() {
     desktop_entry "$game_entry" "$TITLE" "Indoor cycling (MyWhoosh under Proton)" "\"$BIN/mywhoosh.sh\" run" \
         "$GAME/Assets/MYWHOOSH-Square150x150Logo.png" "Game;"
     if [[ -x "$OSMOL" ]]; then
+        local osmol_icon=input-gaming
+        [[ -f "$HOME/.local/share/icons/hicolor/scalable/apps/osmolcontrol.svg" ]] && osmol_icon=osmolcontrol
         desktop_entry "$osmol_entry" "OsmolControl" "Trainer and controller bridge with virtual shifting" \
-            "\"$OSMOL\"" "input-gaming" "Utility;"
+            "\"$OSMOL\"" "$osmol_icon" "Utility;" osmolcontrol
     fi
     command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
     local session="${XDG_CURRENT_DESKTOP:-}"

@@ -67,6 +67,13 @@ impl Backend {
                 connected: true,
                 battery_percent: Some(93),
             };
+            s.heart_rate = bike_session::Device {
+                name: Some("Demo HR strap".into()),
+                connected: true,
+                battery_percent: None,
+            };
+            s.heart_rate_bpm = Some(142);
+            s.heart_rate_at = Some(Instant::now() + Duration::from_secs(3600));
             s.app_trainer_links = 1;
             s.power_w = Some(182);
             s.cadence_rpm = Some(88.0);

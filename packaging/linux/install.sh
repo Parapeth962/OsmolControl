@@ -99,6 +99,15 @@ else
     say "Built and installed"
 fi
 
+# The menu entry (written by mywhoosh.sh) and GNOME's dock find the icon by name.
+icon="$HERE/osmolcontrol.svg"
+[[ -f "$icon" ]] || icon="$HERE/../../apps/bikecontrol/assets/osmolcontrol.svg"
+if [[ -f "$icon" ]]; then
+    install -Dm644 "$icon" "$HOME/.local/share/icons/hicolor/scalable/apps/osmolcontrol.svg"
+    command -v gtk-update-icon-cache >/dev/null &&
+        gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+fi
+
 # --- MyWhoosh -------------------------------------------------------------------------------
 bold "Step 3/3: MyWhoosh (the longest part)"
 flags=(--dircon)

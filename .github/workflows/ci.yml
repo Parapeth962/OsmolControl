@@ -22,7 +22,7 @@ jobs:
         run: |
           cargo build --locked --release -p bikectl -p bikecontrol
           mkdir -p dist/OsmolControl
-          cp target/release/osmolcontrol target/release/bikectl dist/OsmolControl/
+          cp target/release/osmolcontrol target/release/bikectl apps/bikecontrol/assets/osmolcontrol.svg dist/OsmolControl/
           tar -czf dist/OsmolControl-Linux-x86_64.tar.gz -C dist OsmolControl
       - uses: actions/upload-artifact@v4
         with:

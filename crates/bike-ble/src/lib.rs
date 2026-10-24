@@ -4,7 +4,7 @@ use bike_core::{PacketMap, RetryBudget};
 use bike_protocol::Action;
 use btleplug::{
     api::{Central, CharPropFlags, Manager as _, Peripheral as _, ScanFilter},
-    platform::{Adapter, Manager, Peripheral},
+    platform::{Adapter, Manager},
 };
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -15,6 +15,7 @@ use std::{
 use tokio::sync::{broadcast, mpsc, watch};
 use uuid::Uuid;
 pub mod trainer;
+pub use btleplug::platform::Peripheral;
 
 type NotificationStream =
     std::pin::Pin<Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>>;
@@ -149,6 +150,35 @@ pub async fn find(a: &Adapter, selector: &str, seconds: u64) -> Result<Periphera
         );
     }
     matches.pop().ok_or_else(|| anyhow!("device disappeared"))
+}
+/// One bounded scan for devices advertising `service`; strongest signal wins. With `on_air`,
+/// devices BlueZ only remembers from earlier (no signal in this scan) are skipped.
+pub(crate) async fn find_service(
+    a: &Adapter,
+    seconds: u64,
+    service: Uuid,
+    on_air: bool,
+) -> Result<Option<(Peripheral, String)>> {
+    let _ = scan(a, seconds).await?;
+    let mut best: Option<(i16, Peripheral, String)> = None;
+    for p in bounded("list peripherals", a.peripherals()).await? {
+        let Some(props) = bounded("read advertisement", p.properties()).await? else {
+            continue;
+        };
+        if !props.services.contains(&service) || (on_air && props.rssi.is_none()) {
+            continue;
+        }
+        let rssi = props.rssi.unwrap_or(i16::MIN);
+        let name = props.local_name.unwrap_or_else(|| p.id().to_string());
+        if best.as_ref().is_none_or(|(r, _, _)| rssi > *r) {
+            best = Some((rssi, p, name));
+        }
+    }
+    Ok(best.map(|(_, p, n)| (p, n)))
+}
+/// One bounded scan for a heart rate sensor (Heart Rate service) that is on air now.
+pub async fn find_heart_rate(a: &Adapter, seconds: u64) -> Result<Option<(Peripheral, String)>> {
+    find_service(a, seconds, trainer::sig(0x180d), true).await
 }
 /// One bounded scan for any of `profiles`; `None` if nothing known is advertising.
 pub async fn find_known_controller(
@@ -297,7 +327,7 @@ pub async fn inspect(p: &Peripheral) -> Result<Value> {
 fn wants_subscription(c: &btleplug::api::Characteristic, custom: Option<Uuid>) -> bool {
     let standard = match standard_id(c.uuid) {
         Some(0x2a19) => custom.is_none(),
-        id => matches!(id, Some(0x2ad2 | 0x2a63 | 0x2a5b | 0x2ada)),
+        id => matches!(id, Some(0x2ad2 | 0x2a63 | 0x2a5b | 0x2a37 | 0x2ada)),
     };
     (standard || custom == Some(c.uuid))
         && c.properties
@@ -326,7 +356,8 @@ async fn session(
         if wants_subscription(&c, custom) {
             bounded("subscribe", p.listen(&c)).await?;
             count += 1;
-            has_measurements |= matches!(standard_id(c.uuid), Some(0x2ad2 | 0x2a63 | 0x2a5b));
+            has_measurements |=
+                matches!(standard_id(c.uuid), Some(0x2ad2 | 0x2a63 | 0x2a5b | 0x2a37));
             custom_found |= custom == Some(c.uuid);
         }
     }

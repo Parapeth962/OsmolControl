@@ -1,11 +1,11 @@
 //! The only module that writes to a trainer: FTMS Control Point commands that have already
 //! passed `bike_protocol::ftms_control::filter`. Everything else in this crate stays read-only.
-use crate::{bounded, scan, standard_id};
+use crate::{bounded, find_service, standard_id};
 use anyhow::{Context, Result, anyhow, bail};
 use bike_core::RetryBudget;
 use bike_protocol::ftms_control::{self, CommandQueue, Limits};
 use btleplug::{
-    api::{Central, CharPropFlags, Characteristic, Peripheral as _, WriteType},
+    api::{CharPropFlags, Characteristic, Peripheral as _, WriteType},
     platform::{Adapter, Peripheral},
 };
 use futures::StreamExt;
@@ -40,26 +40,10 @@ pub struct Snapshot {
 
 /// Scan once for any device advertising Fitness Machine (FTMS); strongest signal wins.
 pub async fn find_trainer(a: &Adapter, seconds: u64) -> Result<Option<(Peripheral, String)>> {
-    let _ = scan(a, seconds).await?;
-    let ftms = sig(FTMS);
-    let mut best: Option<(i16, Peripheral, String)> = None;
-    for p in bounded("list peripherals", a.peripherals()).await? {
-        let Some(props) = bounded("read advertisement", p.properties()).await? else {
-            continue;
-        };
-        if !props.services.contains(&ftms) {
-            continue;
-        }
-        let rssi = props.rssi.unwrap_or(i16::MIN);
-        let name = props.local_name.unwrap_or_else(|| p.id().to_string());
-        if best.as_ref().is_none_or(|(r, _, _)| rssi > *r) {
-            best = Some((rssi, p, name));
-        }
-    }
-    Ok(best.map(|(_, p, n)| (p, n)))
+    find_service(a, seconds, sig(FTMS), false).await
 }
 
-fn sig(short: u16) -> Uuid {
+pub(crate) fn sig(short: u16) -> Uuid {
     Uuid::from_u128((u128::from(short) << 96) | 0x0000_0000_0000_1000_8000_0080_5f9b_34fb)
 }
 

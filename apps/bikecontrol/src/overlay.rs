@@ -1,4 +1,5 @@
-//! Compact always-on-top window for riding: gear, power, cadence, grade. Drag it anywhere.
+//! Compact always-on-top window for riding: gear, power, cadence, grade, heart rate. Drag it
+//! anywhere.
 use crate::backend::Backend;
 use crate::{ACCENT, MUTED};
 use bike_session::{Mode, Status};
@@ -9,12 +10,15 @@ pub const SIZE: [f32; 2] = [300.0, 150.0];
 /// Returns false when the user closed the overlay.
 pub fn show(ctx: &egui::Context, status: &Status, backend: &Backend) -> bool {
     let mut open = true;
-    let builder = egui::ViewportBuilder::default()
+    let mut builder = egui::ViewportBuilder::default()
         .with_title("OsmolControl overlay")
         .with_inner_size(SIZE)
         .with_always_on_top()
         .with_decorations(false)
         .with_resizable(false);
+    if let Some(icon) = crate::icon() {
+        builder = builder.with_icon(icon);
+    }
     ctx.show_viewport_immediate(
         egui::ViewportId::from_hash_of("overlay"),
         builder,
@@ -80,6 +84,14 @@ pub fn panel(ctx: &egui::Context, status: &Status, backend: &Backend, open: &mut
                     }
                     if ui.small_button("−").on_hover_text("Easier").clicked() {
                         backend.shift(false);
+                    }
+                    if status.heart_rate.name.is_some() {
+                        let bpm = status
+                            .heart_rate_bpm
+                            .filter(|_| status.heart_rate_fresh())
+                            .map_or_else(|| "–".into(), |b| b.to_string());
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(format!("♥ {bpm}")).size(18.0).strong());
                     }
                 });
             });

@@ -21,7 +21,8 @@ or a 50-speed virtual ladder.
   save, and a gear calculator.
 - **Real road feel:** MyWhoosh's slope, your weight and your gear set the target power; ERG
   workouts pass straight through.
-- **Always-on-top overlay** with gear, power, cadence and grade.
+- **Heart rate straps:** any standard Bluetooth strap is passed on to MyWhoosh.
+- **Always-on-top overlay** with gear, power, cadence, grade and heart rate.
 - **Safety first:** every trainer command goes through a filter (allowed commands only, clamped
   to the trainer's own limits, rate limited), and the trainer is reset when you stop.
 - **Windows, macOS and Linux.** On Linux, `packaging/linux/install.sh` also installs MyWhoosh

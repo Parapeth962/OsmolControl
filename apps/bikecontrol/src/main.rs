@@ -20,6 +20,15 @@ const OVERLAY_KEY: &str = "overlay";
 pub const ACCENT: Color32 = Color32::from_rgb(0x2e, 0xc4, 0x8f);
 pub const WARN: Color32 = Color32::from_rgb(0xf2, 0xb1, 0x34);
 pub const MUTED: Color32 = Color32::from_gray(150);
+/// Matches the installed `osmolcontrol.desktop`, so GNOME on Wayland shows the right icon.
+const APP_ID: &str = "osmolcontrol";
+
+/// Window, taskbar and dock icon; the window falls back to the platform default if it fails.
+pub fn icon() -> Option<std::sync::Arc<egui::IconData>> {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/osmolcontrol-256.png"))
+        .map(std::sync::Arc::new)
+        .ok()
+}
 
 fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()
@@ -60,8 +69,12 @@ fn main() -> eframe::Result<()> {
             .with_inner_size([560.0, 720.0])
             .with_min_inner_size([420.0, 520.0])
     };
+    let mut viewport = viewport.with_title(bike_core::APP_NAME).with_app_id(APP_ID);
+    if let Some(icon) = icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: viewport.with_title(bike_core::APP_NAME),
+        viewport,
         ..Default::default()
     };
     eframe::run_native(
