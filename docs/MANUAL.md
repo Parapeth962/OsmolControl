@@ -102,9 +102,10 @@ Proton on the same PC, with desktop and menu shortcuts and automatic game update
 ![Ride tab](images/ride.png)
 
 - **Big number:** current gear, out of the total, with the chainring × cog and the ratio.
-- **Power, Cadence, Speed:** live from the trainer. **Grade** is MyWhoosh's current road slope,
-  **Target** the power OsmolControl asks the trainer for. **Mode** shows *Road* (gears
-  active) or *ERG* (MyWhoosh's workout sets the power; gears pause).
+- **Power, Cadence, Speed:** live from the trainer. **Grade** is the road slope you ride
+  (MyWhoosh's slope × *Climb difficulty*), **Target** the power OsmolControl asks the trainer
+  for. **Mode** shows *Road* (gears active) or *ERG* (MyWhoosh's workout sets the power;
+  gears pause).
 - **Heart rate:** from your strap, shown when one was found.
 - **Connections:** trainer, controller (with battery), heart rate strap and MyWhoosh, green
   when connected.
@@ -148,6 +149,10 @@ Wayland, use your desktop's *Keep above others* window option if it does not sta
 
 - **Mode:** see [section 5](#5-modes).
 - **Rider + bike:** total weight, used for the climbing feel.
+- **Climb difficulty:** how hard hills feel with OsmolControl gears, as a share of the real road
+  grade. MyWhoosh only passes half of its grade on to the trainer; OsmolControl undoes that, so
+  **Real road 100 %** rides the grade shown in MyWhoosh. Drag the slider or pick a preset:
+  Recovery 25 %, Easy 50 %, Moderate 75 %, Real road 100 %, Hard 125 %, Brutal 150 %.
 - **Network address:** leave on *Automatic* unless your computer has several networks.
 - **Bluetooth adapter:** only change with several Bluetooth adapters.
 

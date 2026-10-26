@@ -92,6 +92,10 @@ impl CustomGears {
     }
 }
 
+/// Share of the road grade MyWhoosh sends to the trainer (its trainer difficulty): the grade
+/// it writes over FTMS is half of the one on its screen.
+pub const MYWHOOSH_GRADE_SHARE: f64 = 0.5;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -99,6 +103,9 @@ pub struct Settings {
     pub gears: GearSource,
     /// Rider plus bike.
     pub mass_kg: f64,
+    /// Climb difficulty for virtual shifting, in percent of the real road grade (100 = as on
+    /// the map; MyWhoosh's own trainer difficulty is neutralized).
+    pub difficulty_percent: f64,
     pub adapter: usize,
     /// LAN address to serve on; detected when `None`.
     pub bind: Option<Ipv4Addr>,
@@ -116,6 +123,7 @@ impl Default for Settings {
             mode: Mode::default(),
             gears: GearSource::Template(bike_gearing::TEMPLATES[0].id.into()),
             mass_kg: 84.0,
+            difficulty_percent: 100.0,
             adapter: 0,
             bind: None,
             my_setups: Vec::new(),
@@ -528,7 +536,10 @@ async fn session(
         let count = drivetrain.chainrings.len() * drivetrain.cassette.len();
         log(status, format!("Virtual shifting: {name} ({count} gears)."));
         status.send_modify(|s| s.gearing_name = Some(name));
-        Some(VirtualShifter::new(drivetrain, settings.mass_kg))
+        Some(
+            VirtualShifter::new(drivetrain, settings.mass_kg)
+                .with_grade_scale(settings.difficulty_percent / 100.0 / MYWHOOSH_GRADE_SHARE),
+        )
     } else {
         None
     };

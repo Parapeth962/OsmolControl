@@ -49,6 +49,9 @@ pub struct VirtualShifter {
     /// 0-based index into `gears`.
     index: usize,
     mass_kg: f64,
+    /// Multiplier for the app's grade; apps may send a fraction of the road grade (trainer
+    /// difficulty), 2.0 restores the full grade from a 50 % setting.
+    grade_scale: f64,
     simulation: Option<Simulation>,
     target_w: Option<f64>,
 }
@@ -62,9 +65,20 @@ impl VirtualShifter {
             gears,
             index,
             mass_kg,
+            grade_scale: 1.0,
             simulation: None,
             target_w: None,
         }
+    }
+
+    pub fn with_grade_scale(mut self, grade_scale: f64) -> Self {
+        self.grade_scale = grade_scale;
+        self
+    }
+
+    /// The grade the physics uses, i.e. after scaling.
+    pub fn grade_percent(&self) -> Option<f64> {
+        self.simulation.map(|s| s.grade_percent)
     }
 
     pub fn gear(&self) -> Gear {
@@ -88,7 +102,10 @@ impl VirtualShifter {
     }
 
     pub fn set_simulation(&mut self, simulation: Simulation) {
-        self.simulation = Some(simulation);
+        self.simulation = Some(Simulation {
+            grade_percent: simulation.grade_percent * self.grade_scale,
+            ..simulation
+        });
     }
 
     /// Forget the road, e.g. after the app switched to ERG or reset the trainer.
@@ -184,6 +201,23 @@ mod tests {
         assert!(s.shift(true));
         let high = s.update(Some(85.0), 100.0).unwrap_or_default();
         assert!(high > low, "{high} <= {low}");
+    }
+
+    #[test]
+    fn grade_scale_multiplies_app_grade() {
+        let mut s = shifter().with_grade_scale(2.0);
+        s.set_simulation(Simulation {
+            grade_percent: 2.5,
+            ..flat()
+        });
+        assert_eq!(s.grade_percent(), Some(5.0));
+        let scaled = s.update(Some(85.0), 100.0).unwrap_or_default();
+        let mut plain = shifter();
+        plain.set_simulation(Simulation {
+            grade_percent: 5.0,
+            ..flat()
+        });
+        assert_eq!(plain.update(Some(85.0), 100.0), Some(scaled));
     }
 
     #[test]

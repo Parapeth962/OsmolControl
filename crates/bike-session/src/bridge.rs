@@ -285,6 +285,10 @@ pub async fn run(
                 };
                 let before = router.mode();
                 let routed = router.app_write(&data);
+                // With virtual shifting, show the grade actually ridden (scaled).
+                let grade = grade
+                    .and(router.shifter().and_then(VirtualShifter::grade_percent))
+                    .or(grade);
                 tracing::debug!(command = %bike_protocol::hex(&data), ?grade, "app control write");
                 if router.mode() != before && router.shifter().is_some() {
                     crate::log(&ch.status, match router.mode() {

@@ -4,6 +4,25 @@ use bike_session::{Mode, Settings};
 use eframe::egui::{self, RichText};
 use std::net::Ipv4Addr;
 
+/// Climb difficulty presets, in percent of the real road grade.
+const DIFFICULTY_PRESETS: [(f64, &str); 6] = [
+    (25.0, "Recovery"),
+    (50.0, "Easy"),
+    (75.0, "Moderate"),
+    (100.0, "Real road"),
+    (125.0, "Hard"),
+    (150.0, "Brutal"),
+];
+
+/// Name of the nearest preset at or below `percent`.
+fn difficulty_label(percent: f64) -> &'static str {
+    DIFFICULTY_PRESETS
+        .iter()
+        .rev()
+        .find(|(p, _)| percent >= p - 0.5)
+        .map_or(DIFFICULTY_PRESETS[0].1, |(_, label)| label)
+}
+
 /// `demo_address` replaces the detected LAN address in demo mode (screenshots).
 pub fn show(
     ui: &mut egui::Ui,
@@ -38,6 +57,39 @@ pub fn show(
                     .speed(0.5)
                     .suffix(" kg"),
             );
+            ui.end_row();
+
+            ui.label("Climb difficulty").on_hover_text(
+                "How hard MyWhoosh's hills feel with virtual shifting. 100 % rides the road grade \
+                 shown in MyWhoosh; MyWhoosh's own halving of the grade is undone.",
+            );
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width = 240.0;
+                    ui.add(
+                        egui::Slider::new(&mut settings.difficulty_percent, 25.0..=150.0)
+                            .smart_aim(false)
+                            .fixed_decimals(0)
+                            .suffix(" %"),
+                    );
+                    ui.label(
+                        RichText::new(difficulty_label(settings.difficulty_percent)).color(MUTED),
+                    );
+                });
+                for row in DIFFICULTY_PRESETS.chunks(3) {
+                    ui.horizontal(|ui| {
+                        for &(percent, label) in row {
+                            let current = (settings.difficulty_percent - percent).abs() < 0.5;
+                            if ui
+                                .selectable_label(current, format!("{label} {percent:.0} %"))
+                                .clicked()
+                            {
+                                settings.difficulty_percent = percent;
+                            }
+                        }
+                    });
+                }
+            });
             ui.end_row();
 
             ui.label("Network address");
