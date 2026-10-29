@@ -122,8 +122,8 @@ rebuilds OsmolControl and refreshes the launcher; the game and your login stay a
 Click **Overlay** (top bar) for this small always-on-top window with gear, power, cadence and
 grade. Drag it over MyWhoosh. The **− / +** buttons shift; **🗙** closes it. On Linux
 OsmolControl runs as an X11 window (through XWayland on Wayland desktops), like MyWhoosh under
-Proton, so the overlay stays above the game even in fullscreen on KDE Plasma. On other desktops
-use *Keep above others* if it hides behind a fullscreen game.
+Proton, so the overlay stays above the game even in fullscreen on KDE Plasma and GNOME. On
+other desktops use *Keep above others* if it hides behind a fullscreen game.
 
 ### Gears
 

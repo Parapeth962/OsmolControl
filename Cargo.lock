@@ -540,6 +540,7 @@ name = "bike-mywhoosh"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bike-core",
  "bike-protocol",
  "mdns-sd",
  "tokio",
