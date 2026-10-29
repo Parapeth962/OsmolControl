@@ -7,7 +7,8 @@
 #
 # It installs the few system packages it needs (apt, dnf or pacman; asks for your password once),
 # installs OsmolControl, downloads MyWhoosh and prepares it to ride with OsmolControl. Run it as
-# your normal user, not with sudo.
+# your normal user, not with sudo. Run it again to update: OsmolControl and the launcher scripts
+# are replaced, an installed MyWhoosh (which updates itself) is kept.
 set -euo pipefail
 
 HERE="$(dirname "$(realpath "$0")")"
@@ -32,6 +33,22 @@ for arg in "$@"; do
         *) die "unknown option $arg" ;;
     esac
 done
+# Same locations as mywhoosh.sh.
+root_of() {
+    case "$1" in
+        hd) echo "${MYWHOOSH_ROOT:-$HOME/Games/mywhoosh-hd-linux}" ;;
+        *) echo "${MYWHOOSH_ROOT:-$HOME/Games/mywhoosh-linux}" ;;
+    esac
+}
+installed() { [[ -f "$(root_of "$1")/edition" && -e "$(root_of "$1")/game" ]]; }
+updating=()
+for e in standard hd; do
+    installed "$e" && updating+=("$e")
+done
+if [[ -z "$edition" && ${#updating[@]} -gt 0 ]]; then
+    edition="${updating[0]}"
+    say "Found an installed MyWhoosh: updating OsmolControl and keeping the game."
+fi
 if [[ -z "$edition" ]]; then
     bold "Which MyWhoosh do you want?"
     say "1) MyWhoosh      - recommended, runs on most PCs (download about 4 GB)"
@@ -43,26 +60,31 @@ if [[ -z "$edition" ]]; then
 fi
 need_gb=8
 [[ "$edition" == hd ]] && need_gb=20
+installed "$edition" && need_gb=1
 free_gb=$(( $(df -Pk "$HOME" | awk 'NR==2 {print $4}') / 1024 / 1024 ))
 ((free_gb >= need_gb)) || die "not enough disk space: $need_gb GB needed in your home folder, $free_gb GB free"
 
 # --- system packages ------------------------------------------------------------------------
 bold "Step 1/3: system packages"
 if command -v apt-get >/dev/null; then
-    packages=(python3 curl ca-certificates tar libnotify-bin bluez mesa-vulkan-drivers xdg-user-dirs)
+    packages=(python3 curl ca-certificates tar libnotify-bin bluez mesa-vulkan-drivers xdg-user-dirs
+        xwayland libxkbcommon-x11-0 libxcursor1 libxi6)
     install_cmd=(sudo apt-get install -y)
     refresh=(sudo apt-get update)
 elif command -v dnf >/dev/null; then
-    packages=(python3 curl ca-certificates tar libnotify bluez mesa-vulkan-drivers xdg-user-dirs)
+    packages=(python3 curl ca-certificates tar libnotify bluez mesa-vulkan-drivers xdg-user-dirs
+        xorg-x11-server-Xwayland libxkbcommon-x11 libXcursor libXi)
     install_cmd=(sudo dnf install -y)
     refresh=()
 elif command -v pacman >/dev/null; then
-    packages=(python curl ca-certificates tar libnotify bluez bluez-utils xdg-user-dirs)
+    packages=(python curl ca-certificates tar libnotify bluez bluez-utils xdg-user-dirs
+        xorg-xwayland libxkbcommon-x11 libxcursor libxi)
     install_cmd=(sudo pacman -S --needed --noconfirm)
     refresh=()
 else
     die "this Linux has neither apt, dnf nor pacman; install python3, curl, tar and bluez yourself and rerun"
 fi
+# The X11 ones let the overlay stay above MyWhoosh, which runs on X11 too.
 say "Installing: ${packages[*]}"
 say "Your password may be asked for (this is sudo, the normal way to install software)."
 ((${#refresh[@]} == 0)) || "${refresh[@]}"
@@ -110,9 +132,21 @@ fi
 
 # --- MyWhoosh -------------------------------------------------------------------------------
 bold "Step 3/3: MyWhoosh (the longest part)"
-flags=(--dircon)
-[[ "$edition" == hd ]] && flags+=(--hd)
-"$HERE/mywhoosh/mywhoosh.sh" install "${flags[@]}"
+for e in "${updating[@]}"; do
+    # Newer launcher and Bluetooth bridge; the game, its login and the Bluetooth mode stay.
+    install -m 755 "$HERE/mywhoosh/mywhoosh.sh" "$HERE/mywhoosh/ble-bridge.py" "$(root_of "$e")/bin/"
+    say "Updated the launcher in $(root_of "$e")"
+done
+if installed "$edition"; then
+    say "MyWhoosh is already installed and updates itself when it starts."
+else
+    flags=(--dircon)
+    [[ "$edition" == hd ]] && flags+=(--hd)
+    "$HERE/mywhoosh/mywhoosh.sh" install "${flags[@]}"
+fi
+if pgrep -x osmolcontrol >/dev/null; then
+    say "OsmolControl is running: close it and start it again to use the new version."
+fi
 
 title="MyWhoosh"
 [[ "$edition" == hd ]] && title="MyWhoosh HD"
