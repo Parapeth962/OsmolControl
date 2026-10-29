@@ -56,7 +56,13 @@ impl<'a> Cursor<'a> {
 }
 
 pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 pub fn unhex(input: &str) -> Result<Vec<u8>, DecodeError> {
     let s: String = input
@@ -335,6 +341,9 @@ pub enum Action {
     ShiftDown,
 }
 impl Action {
+    /// Presses older than this when they are handled are dropped rather than applied late.
+    pub const MAX_AGE: std::time::Duration = std::time::Duration::from_millis(500);
+
     pub fn id(self) -> u8 {
         match self {
             Self::ShiftUp => 1,

@@ -13,8 +13,9 @@ use uuid::Uuid;
 const CONTROL_POINT: u16 = 0x2ad9;
 const INDOOR_BIKE_DATA: u16 = 0x2ad2;
 const MACHINE_STATUS: u16 = 0x2ada;
-/// Power target update period in virtual-shifting mode (the trainer queue paces writes too).
-const TICK: Duration = Duration::from_millis(500);
+/// Power target update period in virtual-shifting mode (the trainer queue paces writes too);
+/// matches the trainer's 4 Hz cadence reports. Shifts send a target at once.
+const TICK: Duration = Duration::from_millis(250);
 
 /// The DirCon GATT table: the trainer's FTMS and Cycling Power characteristics with their real
 /// values. Only the FTMS Control Point is writable; other control points are not exposed.
@@ -66,7 +67,7 @@ pub fn heart_rate_service() -> Service {
 use crate::{Control as Mode, GearInfo, StatusTx};
 
 /// Cadence older than this is treated as unknown (the rider stopped or the trainer went quiet).
-const CADENCE_MAX_AGE: Duration = Duration::from_secs(3);
+const CADENCE_MAX_AGE: Duration = crate::TELEMETRY_MAX_AGE;
 
 /// Pure routing between the app, the trainer and the virtual drivetrain.
 pub struct Router {
@@ -107,14 +108,7 @@ impl Router {
 
     pub fn gear_info(&self) -> Option<GearInfo> {
         let s = self.shifter.as_ref()?;
-        let g = s.gear();
-        Some(GearInfo {
-            number: g.number,
-            of: s.gear_count(),
-            chainring: g.chainring,
-            cog: g.cog,
-            ratio: g.ratio,
-        })
+        Some(GearInfo::new(&s.gear(), s.gear_count()))
     }
 
     pub fn app_write(&mut self, data: &[u8]) -> Routed {
@@ -263,11 +257,6 @@ pub async fn run(
     mut ch: Channels,
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
-    let send = |tx: &mpsc::Sender<Vec<u8>>, c: Vec<u8>| {
-        if tx.try_send(c).is_err() {
-            tracing::warn!("trainer busy; control command dropped");
-        }
-    };
     publish(&router, &ch.status, None, None);
     let mut ticker = tokio::time::interval(TICK);
     loop {
@@ -322,28 +311,41 @@ pub async fn run(
                     let of = router.shifter().map_or(0, VirtualShifter::gear_count);
                     crate::log(&ch.status, format!("Gear {}/{of} ({}x{})", gear.number, gear.chainring, gear.cog));
                     publish(&router, &ch.status, None, None);
+                    // Do not wait for the next tick: the trainer gets the new gear's power now.
+                    power_target(&mut router, &ch);
+                    ticker.reset();
                 }
             }
-            _ = ticker.tick() => {
-                if let Some(c) = router.tick(Instant::now()) {
-                    let target = i16::from_le_bytes([c[1], c[2]]);
-                    {
-                        let s = ch.status.borrow();
-                        tracing::debug!(
-                            target,
-                            power = ?s.power_w,
-                            cadence = ?s.cadence_rpm,
-                            grade = ?s.grade_percent,
-                            gear = ?s.gear.as_ref().map(|g| g.number),
-                            "power target"
-                        );
-                    }
-                    send(&ch.to_trainer, c);
-                    publish(&router, &ch.status, None, Some(target));
-                }
-            }
+            _ = ticker.tick() => power_target(&mut router, &ch),
         }
     }
+}
+
+fn send(tx: &mpsc::Sender<Vec<u8>>, command: Vec<u8>) {
+    if tx.try_send(command).is_err() {
+        tracing::warn!("trainer busy; control command dropped");
+    }
+}
+
+/// Send the router's next power target to the trainer, if any.
+fn power_target(router: &mut Router, ch: &Channels) {
+    let Some(c) = router.tick(Instant::now()) else {
+        return;
+    };
+    let target = i16::from_le_bytes([c[1], c[2]]);
+    {
+        let s = ch.status.borrow();
+        tracing::debug!(
+            target,
+            power = ?s.power_w,
+            cadence = ?s.cadence_rpm,
+            grade = ?s.grade_percent,
+            gear = ?s.gear.as_ref().map(|g| g.number),
+            "power target"
+        );
+    }
+    send(&ch.to_trainer, c);
+    publish(router, &ch.status, None, Some(target));
 }
 
 /// Next fresh controller action; pends forever without a controller.
@@ -354,7 +356,7 @@ async fn recv_action(
         return std::future::pending().await;
     };
     match rx.recv().await {
-        Ok((at, action)) if at.elapsed() < Duration::from_millis(500) => Some(action),
+        Ok((at, action)) if at.elapsed() < Action::MAX_AGE => Some(action),
         Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => None,
         Err(broadcast::error::RecvError::Closed) => {
             *actions = None;
@@ -487,6 +489,51 @@ mod tests {
     }
 
     #[test]
+    fn every_claris_shift_reaches_the_trainer_at_once() {
+        let t = bike_gearing::template("claris-r2000-50-34-11-32")
+            .unwrap_or_else(|| panic!("no Claris template"));
+        let d = t.drivetrain().unwrap_or_else(|e| panic!("{e}"));
+        let mut r = Router::new(
+            ftms_control::Limits::FALLBACK,
+            Some(VirtualShifter::new(d, 84.0)),
+        );
+        let t0 = Instant::now();
+        r.app_write(&SIM);
+        r.trainer_notification(
+            sig(INDOOR_BIKE_DATA),
+            &[0x44, 0, 0x9b, 0x07, 0x7c, 0, 0x52, 0],
+            t0,
+        );
+        let watts = |c: Vec<u8>| i16::from_le_bytes([c[1], c[2]]);
+        while r.shift(Action::ShiftDown).is_some() {}
+        let mut last = r.tick(t0).map(watts).unwrap_or_else(|| panic!("no target"));
+        let mut gears = vec![1];
+        // No time passes between shifts: the slew limit must not hold the new gear back.
+        while let Some(g) = r.shift(Action::ShiftUp) {
+            let now = r
+                .tick(t0)
+                .map(watts)
+                .unwrap_or_else(|| panic!("gear {}", g.number));
+            assert!(now > last, "gear {}: {now} W <= {last} W", g.number);
+            last = now;
+            gears.push(g.number);
+        }
+        assert_eq!(gears, (1..=16).collect::<Vec<_>>());
+        while let Some(g) = r.shift(Action::ShiftDown) {
+            let now = r
+                .tick(t0)
+                .map(watts)
+                .unwrap_or_else(|| panic!("gear {}", g.number));
+            assert!(now < last, "gear {}: {now} W >= {last} W", g.number);
+            last = now;
+        }
+        assert_eq!(
+            r.gear_info().map(|g| (g.number, g.chainring, g.cog)),
+            Some((1, 34, 32))
+        );
+    }
+
+    #[test]
     fn erg_from_app_overrides_gears_and_stale_cadence_goes_easy() {
         let mut r = router(true);
         let t0 = Instant::now();
@@ -510,5 +557,166 @@ mod tests {
             "ERG owns the trainer"
         );
         assert!(r.trainer_notification(sig(CONTROL_POINT), &[0x80, 0x05, 0x01], stale));
+    }
+
+    /// Captured X2 Max Indoor Bike Data at 62 rpm.
+    const PEDALLING: [u8; 8] = [0x44, 0, 0x9b, 0x07, 0x7c, 0, 0x52, 0];
+    fn watts(command: Option<Vec<u8>>) -> i16 {
+        let c = command.unwrap_or_else(|| panic!("no power target"));
+        assert_eq!(c[0], ftms_control::SET_TARGET_POWER);
+        i16::from_le_bytes([c[1], c[2]])
+    }
+
+    #[test]
+    fn targets_respect_trainer_limits_and_are_not_repeated() {
+        let limits = ftms_control::Limits {
+            power_w: (0, 150),
+            resistance: (0, 100),
+        };
+        let t = &bike_gearing::TEMPLATES[0];
+        let shifter = VirtualShifter::new(t.drivetrain().unwrap_or_else(|e| panic!("{e}")), 84.0);
+        let mut r = Router::new(limits, Some(shifter));
+        let t0 = Instant::now();
+        r.trainer_notification(sig(INDOOR_BIKE_DATA), &PEDALLING, t0);
+        r.app_write(&SIM);
+        while r.shift(Action::ShiftUp).is_some() {}
+        // The top gear at 62 rpm uphill wants far more than this trainer allows.
+        assert_eq!(watts(r.tick(t0)), 150);
+        assert_eq!(r.tick(t0), None, "an unchanged target is not resent");
+        assert_eq!(r.shift(Action::ShiftUp), None, "already in the top gear");
+    }
+
+    #[test]
+    fn reset_pauses_gears_until_the_road_returns() {
+        let mut r = router(true);
+        let t0 = Instant::now();
+        r.trainer_notification(sig(INDOOR_BIKE_DATA), &PEDALLING, t0);
+        r.app_write(&SIM);
+        assert!(r.tick(t0).is_some());
+        assert_eq!(
+            r.app_write(&[ftms_control::RESET]).to_trainer,
+            vec![vec![0x01]]
+        );
+        assert_eq!(r.mode(), Mode::None);
+        // Shifting still moves the gear, but nothing drives the trainer until the road is back.
+        assert!(r.shift(Action::ShiftUp).is_some());
+        assert_eq!(r.tick(t0), None);
+        assert!(r.app_write(&SIM).to_trainer.is_empty());
+        assert_eq!(r.mode(), Mode::Simulation);
+        assert!(r.tick(t0).is_some());
+    }
+
+    #[test]
+    fn without_gears_nothing_shifts() {
+        let mut r = router(false);
+        assert_eq!(r.shift(Action::ShiftUp), None);
+        assert_eq!(r.gear_info(), None);
+        // Trainer replies reach the app untouched when OsmolControl does not shift.
+        assert!(r.trainer_notification(sig(CONTROL_POINT), &[0x80, 0x05, 0x01], Instant::now()));
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "channel plumbing in a test"
+    )]
+    async fn run_loop_shifts_at_once_relays_both_ways_and_yields_to_erg() {
+        let (write_tx, app_writes) = mpsc::channel(8);
+        let (trainer_tx, from_trainer) = broadcast::channel(8);
+        let (to_app, mut app_rx) = broadcast::channel(8);
+        let (to_trainer, mut trainer_rx) = mpsc::channel(8);
+        let (action_tx, actions) = broadcast::channel(8);
+        let status: StatusTx = std::sync::Arc::new(watch::channel(crate::Status::default()).0);
+        let (stop_tx, stop) = watch::channel(false);
+        let start_gear = router(true).gear_info().unwrap().number;
+        let job = tokio::spawn(run(
+            router(true),
+            Channels {
+                app_writes,
+                from_trainer,
+                to_app,
+                to_trainer,
+                actions: Some(actions),
+                status: status.clone(),
+            },
+            stop,
+        ));
+        let wait = Duration::from_millis(1000);
+
+        // Trainer data reaches MyWhoosh and the status.
+        trainer_tx
+            .send((sig(INDOOR_BIKE_DATA), PEDALLING.to_vec()))
+            .unwrap();
+        let relayed = tokio::time::timeout(wait, app_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(relayed, (sig(INDOOR_BIKE_DATA), PEDALLING.to_vec()));
+        assert!(status.borrow().telemetry_fresh());
+
+        // The road is acknowledged to MyWhoosh and turned into a power target.
+        write_tx
+            .send((sig(CONTROL_POINT), SIM.to_vec()))
+            .await
+            .unwrap();
+        let ack = tokio::time::timeout(wait, app_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(ack, (sig(CONTROL_POINT), vec![0x80, 0x11, 0x01]));
+        let low = watts(tokio::time::timeout(wait, trainer_rx.recv()).await.unwrap());
+        assert!(low > 0);
+
+        // A shift goes to the trainer well before the next 250 ms tick.
+        action_tx.send((Instant::now(), Action::ShiftUp)).unwrap();
+        let shifted = tokio::time::timeout(Duration::from_millis(100), trainer_rx.recv())
+            .await
+            .expect("the shift must not wait for the ticker");
+        assert!(watts(shifted) > low);
+        {
+            let s = status.borrow();
+            assert_eq!(s.gear.map(|g| g.number), Some(start_gear + 1));
+            assert!(s.log.iter().any(|l| l.starts_with("Gear ")));
+        }
+
+        // A press older than the limit is dropped, not applied late.
+        action_tx
+            .send((Instant::now() - Duration::from_secs(1), Action::ShiftUp))
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(status.borrow().gear.map(|g| g.number), Some(start_gear + 1));
+
+        // ERG from MyWhoosh goes to the trainer as sent; gears no longer drive it.
+        write_tx
+            .send((sig(CONTROL_POINT), vec![0x05, 0xc8, 0]))
+            .await
+            .unwrap();
+        let erg = tokio::time::timeout(wait, trainer_rx.recv()).await.unwrap();
+        assert_eq!(erg, Some(vec![0x05, 0xc8, 0]));
+        assert_eq!(status.borrow().control, Mode::Target);
+        assert!(
+            status
+                .borrow()
+                .log
+                .iter()
+                .any(|l| l.contains("gears paused"))
+        );
+        action_tx.send((Instant::now(), Action::ShiftUp)).unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(600), trainer_rx.recv())
+                .await
+                .is_err(),
+            "no gear power target during ERG"
+        );
+
+        stop_tx.send(true).unwrap();
+        assert!(
+            tokio::time::timeout(wait, job)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_ok()
+        );
     }
 }

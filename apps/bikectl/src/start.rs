@@ -14,6 +14,8 @@ pub struct Options {
     /// Virtual shifting with this gear template (requires `bridge`).
     pub gears: Option<String>,
     pub mass_kg: f64,
+    /// Look for a heart rate strap.
+    pub heart_rate: bool,
 }
 
 fn settings(options: &Options) -> Settings {
@@ -32,6 +34,7 @@ fn settings(options: &Options) -> Settings {
         mass_kg: options.mass_kg,
         adapter: options.adapter,
         bind: options.bind,
+        heart_rate: options.heart_rate,
         ..defaults
     }
 }
@@ -74,6 +77,7 @@ mod tests {
             bridge,
             gears: gears.map(Into::into),
             mass_kg: 80.0,
+            heart_rate: true,
         };
         assert_eq!(settings(&o(false, None)).mode, Mode::ControllerOnly);
         assert_eq!(settings(&o(true, None)).mode, Mode::VirtualTrainer);
@@ -84,5 +88,11 @@ mod tests {
             GearSource::Template("grx-rx400-46-30-11-36".into())
         );
         assert_eq!(s.mass_kg, 80.0);
+        assert!(s.heart_rate);
+        let off = Options {
+            heart_rate: false,
+            ..o(true, None)
+        };
+        assert!(!settings(&off).heart_rate);
     }
 }

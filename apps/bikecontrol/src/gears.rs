@@ -391,3 +391,57 @@ fn calculator(ui: &mut egui::Ui, d: &Drivetrain) {
         });
     ui.label(RichText::new("The highlighted gear is where each ride starts.").color(MUTED));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(front: &str, rear: &str) -> GearsTab {
+        GearsTab {
+            front: front.into(),
+            rear: rear.into(),
+            ..GearsTab::default()
+        }
+    }
+
+    #[test]
+    fn custom_setup_is_parsed_sorted_and_checked() {
+        let mut t = tab("50/34", "28-11-13");
+        t.name = "  Winter  ".into();
+        let custom = t.parse().unwrap_or_else(|| panic!("{:?}", t.error));
+        assert_eq!(custom.cassette, vec![11, 13, 28], "cogs in any order");
+        assert_eq!(custom.name, "Winter");
+        assert_eq!(t.error, None);
+        let mut bad = tab("50/x", "11-13");
+        assert_eq!(bad.parse(), None);
+        assert!(bad.error.as_deref().is_some_and(|e| e.contains("numbers")));
+        let mut duplicate = tab("50/34", "11-13-11");
+        assert_eq!(duplicate.parse(), None);
+        assert!(
+            duplicate
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("twice"))
+        );
+        let mut wheel = tab("50", "11");
+        wheel.wheel_mm = 900;
+        assert_eq!(wheel.parse(), None);
+    }
+
+    #[test]
+    fn editing_a_saved_setup_round_trips() {
+        let saved = CustomGears {
+            name: "Claris".into(),
+            chainrings: vec![50, 34],
+            cassette: vec![11, 13, 15, 18, 21, 24, 28, 32],
+            wheel_mm: 2105,
+        };
+        let mut t = GearsTab::default();
+        t.edit(&saved);
+        assert_eq!(
+            (t.front.as_str(), t.rear.as_str()),
+            ("50/34", "11-13-15-18-21-24-28-32")
+        );
+        assert_eq!(t.parse(), Some(saved));
+    }
+}

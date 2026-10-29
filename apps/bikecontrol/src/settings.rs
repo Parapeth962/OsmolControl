@@ -92,6 +92,14 @@ pub fn show(
             });
             ui.end_row();
 
+            ui.label("Heart rate");
+            ui.checkbox(&mut settings.heart_rate, "Use a heart rate strap")
+                .on_hover_text(
+                    "Look for a Bluetooth heart rate strap when a ride starts and pass its \
+                     readings to MyWhoosh. Off: no search, the ride starts a few seconds sooner.",
+                );
+            ui.end_row();
+
             ui.label("Network address");
             ui.horizontal(|ui| {
                 let mut auto = settings.bind.is_none();
@@ -132,5 +140,30 @@ pub fn show(
     ui.separator();
     if ui.button("Reset to defaults").clicked() {
         *settings = Settings::default();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn difficulty_names_the_preset_at_or_below() {
+        assert_eq!(difficulty_label(100.0), "Real road");
+        assert_eq!(
+            difficulty_label(99.6),
+            "Real road",
+            "rounding to the preset"
+        );
+        assert_eq!(difficulty_label(99.0), "Moderate");
+        assert_eq!(difficulty_label(150.0), "Brutal");
+        assert_eq!(
+            difficulty_label(10.0),
+            "Recovery",
+            "below the lowest preset"
+        );
+        for (percent, label) in DIFFICULTY_PRESETS {
+            assert_eq!(difficulty_label(percent), label);
+        }
     }
 }

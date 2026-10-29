@@ -16,6 +16,15 @@ use uuid::Uuid;
 
 pub const SERVICE: &str = "_openbikecontrol._tcp.local.";
 pub const SERVICE_UUID: &str = "d273f680-d548-419d-b9d1-fa0472345229";
+/// Clients served at once; later ones are turned away.
+const MAX_CLIENTS: usize = 4;
+/// A client that cannot take a few bytes in this time is dropped.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Readiness is repeated this often, besides being sent on every change.
+const STATUS_INTERVAL: Duration = Duration::from_secs(30);
+/// A partly received app frame must complete within this time.
+const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub address: Ipv4Addr,
@@ -24,10 +33,30 @@ pub struct Config {
     pub advertise: bool,
 }
 async fn write(socket: &mut TcpStream, bytes: &[u8]) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(3), socket.write_all(bytes))
+    tokio::time::timeout(WRITE_TIMEOUT, socket.write_all(bytes))
         .await
         .context("slow MyWhoosh client")??;
     Ok(())
+}
+/// Device status message: whether the controller is connected and its presses can be trusted.
+async fn send_readiness(socket: &mut TcpStream, ready: bool) -> Result<()> {
+    write(socket, &[2, 255, u8::from(ready)]).await
+}
+fn handle(message: AppMessage, app: &mut Option<AppInfo>) {
+    match message {
+        AppMessage::Info(info) => {
+            tracing::info!(app = %info.id, version = %info.version, "app capabilities received");
+            *app = Some(info);
+        }
+        AppMessage::Haptic { .. } => {
+            tracing::debug!("haptic request ignored: no verified haptic device");
+        }
+        // MyWhoosh 5.7.0 sends a lone 0x00 every 4 s; treated as a keepalive.
+        AppMessage::Unknown(raw) if raw == [0] => tracing::trace!("app keepalive"),
+        AppMessage::Unknown(raw) => {
+            tracing::warn!(raw = %bike_protocol::hex(&raw), "unknown app-to-device message dropped");
+        }
+    }
 }
 async fn client(
     mut socket: TcpStream,
@@ -39,7 +68,7 @@ async fn client(
     let mut decoder = AppDecoder::default();
     let mut app: Option<AppInfo> = None;
     let mut bytes = [0u8; 1024];
-    let mut status = tokio::time::interval(Duration::from_secs(30));
+    let mut status = tokio::time::interval(STATUS_INTERVAL);
     let mut pending_since: Option<Instant> = None;
     let mut housekeeping = tokio::time::interval(Duration::from_secs(1));
     loop {
@@ -47,36 +76,57 @@ async fn client(
             return Ok(());
         }
         tokio::select! {
-            _=stop.changed()=>return Ok(()),
-            n=socket.read(&mut bytes)=>{
-                let n=n?;if n==0 {return Ok(());}
-                for message in decoder.push(&bytes[..n])?{match message{
-                    AppMessage::Info(info)=>{tracing::info!(app=%info.id,version=%info.version,"app capabilities received");app=Some(info);}
-                    AppMessage::Haptic{..}=>tracing::debug!("haptic request ignored: no verified haptic device"),
-                    // MyWhoosh 5.7.0 sends a lone 0x00 every 4 s; treated as a keepalive.
-                    AppMessage::Unknown(raw) if raw==[0]=>tracing::trace!("app keepalive"),
-                    AppMessage::Unknown(raw)=>tracing::warn!(raw=%bike_protocol::hex(&raw),"unknown app-to-device message dropped"),
-                }}
-                if decoder.is_pending(){pending_since.get_or_insert_with(Instant::now);}else{pending_since=None;}
-            }
-            event=actions.recv()=>match event{
-                Ok((at,action))=>{
-                    if at.elapsed()>Duration::from_millis(500) || !*readiness.borrow(){tracing::debug!(?action,"stale or not-ready action dropped");continue;}
-                    if app.as_ref().is_none_or(|a|a.supports(action)){
-                        write(&mut socket,&action.transition(true)).await?;
-                        write(&mut socket,&action.transition(false)).await?;
-                    }else{tracing::warn!(?action,"app does not support action");}
+            _ = stop.changed() => return Ok(()),
+            n = socket.read(&mut bytes) => {
+                let n = n?;
+                if n == 0 {
+                    return Ok(());
                 }
-                Err(broadcast::error::RecvError::Lagged(_))=>{bail!("action consumer lagged; reconnect to avoid partial input");}
-                Err(broadcast::error::RecvError::Closed)=>return Ok(()),
+                for message in decoder.push(&bytes[..n])? {
+                    handle(message, &mut app);
+                }
+                if decoder.is_pending() {
+                    pending_since.get_or_insert_with(Instant::now);
+                } else {
+                    pending_since = None;
+                }
+            }
+            event = actions.recv() => match event {
+                Ok((at, action)) => {
+                    if at.elapsed() > Action::MAX_AGE || !*readiness.borrow() {
+                        tracing::debug!(?action, "stale or not-ready action dropped");
+                    } else if app.as_ref().is_none_or(|a| a.supports(action)) {
+                        write(&mut socket, &action.transition(true)).await?;
+                        write(&mut socket, &action.transition(false)).await?;
+                    } else {
+                        tracing::warn!(?action, "app does not support action");
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    bail!("action consumer lagged; reconnect to avoid partial input");
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
             },
-            _=status.tick()=>{let ready=*readiness.borrow();write(&mut socket,&[2,255,u8::from(ready)]).await?;},
-            changed=readiness.changed()=>{if changed.is_err(){return Ok(());}let ready=*readiness.borrow();write(&mut socket,&[2,255,u8::from(ready)]).await?;},
-            _=housekeeping.tick()=>{if pending_since.is_some_and(|at|at.elapsed()>Duration::from_secs(5)){bail!("incomplete app frame timed out");}}
+            _ = status.tick() => {
+                let ready = *readiness.borrow();
+                send_readiness(&mut socket, ready).await?;
+            }
+            changed = readiness.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                let ready = *readiness.borrow();
+                send_readiness(&mut socket, ready).await?;
+            }
+            _ = housekeeping.tick() => {
+                if pending_since.is_some_and(|at| at.elapsed() > FRAME_TIMEOUT) {
+                    bail!("incomplete app frame timed out");
+                }
+            }
         }
     }
 }
-/// At most four active clients. New sessions get no historic button events.
+/// At most [`MAX_CLIENTS`] active clients. New sessions get no historic button events.
 pub async fn serve_with_readiness(
     config: Config,
     actions: broadcast::Sender<(Instant, Action)>,
@@ -133,11 +183,22 @@ pub async fn serve_with_clients(
         }
         tokio::select! {
             _=stop.changed()=>break Ok(()),
-            accepted=listener.accept()=>match accepted{
-                Ok((socket,_peer))=>{if clients.len()<4 {clients.spawn(client(socket,actions.subscribe(),stop.clone(),readiness.clone()));let _=active.send(clients.len());}else{tracing::warn!("client limit reached");}}
-                Err(e)=>break Err(e.into()),
+            accepted = listener.accept() => match accepted {
+                Ok((socket, _peer)) if clients.len() < MAX_CLIENTS => {
+                    clients.spawn(client(socket, actions.subscribe(), stop.clone(), readiness.clone()));
+                    let _ = active.send(clients.len());
+                }
+                Ok(_) => tracing::warn!("client limit reached"),
+                Err(e) => break Err(e.into()),
             },
-            result=clients.join_next(),if !clients.is_empty()=>{match result{Some(Ok(Err(e)))=>tracing::warn!(error=%e,"client disconnected"),Some(Err(e))=>tracing::warn!(error=%e,"client task failed"),_=>{}}let _=active.send(clients.len());}
+            result = clients.join_next(), if !clients.is_empty() => {
+                match result {
+                    Some(Ok(Err(e))) => tracing::warn!(error = %e, "client disconnected"),
+                    Some(Err(e)) => tracing::warn!(error = %e, "client task failed"),
+                    _ => {}
+                }
+                let _ = active.send(clients.len());
+            }
         }
     };
     clients.abort_all();
@@ -147,16 +208,6 @@ pub async fn serve_with_clients(
         let _ = daemon.shutdown();
     }
     result
-}
-
-/// Serve an already-ready input source. BLE callers should use `serve_with_readiness`.
-pub async fn serve(
-    config: Config,
-    actions: broadcast::Sender<(Instant, Action)>,
-    stop: watch::Receiver<bool>,
-) -> Result<()> {
-    let (_sender, ready) = watch::channel(true);
-    serve_with_readiness(config, actions, stop, ready).await
 }
 
 #[cfg(test)]
