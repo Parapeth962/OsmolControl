@@ -11,5 +11,6 @@ anyhow.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 mdns-sd.workspace = true
+bike-core.workspace = true
 bike-protocol.workspace = true
 tracing.workspace = true

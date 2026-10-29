@@ -159,12 +159,16 @@ pub async fn serve_with_clients(
             ("name", config.name.as_str()),
             ("service-uuids", SERVICE_UUID),
             ("manufacturer", config.name.as_str()),
-            ("model", "bikectl"),
+            ("model", bike_core::APP_NAME),
         ];
         let info = ServiceInfo::new(
             SERVICE,
             &config.name,
-            &format!("osmolcontrol-{}.local.", &id[..12]),
+            &format!(
+                "{}-{}.local.",
+                bike_core::APP_NAME.to_lowercase(),
+                &id[..12]
+            ),
             std::net::IpAddr::V4(config.address),
             port,
             &txt[..],

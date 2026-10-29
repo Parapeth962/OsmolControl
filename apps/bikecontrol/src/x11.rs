@@ -1,6 +1,7 @@
-//! X11 window tweaks egui cannot express. MyWhoosh runs fullscreen under Proton, and KWin keeps
-//! even "keep above" windows below the focused fullscreen window; only on-screen-display
-//! windows are stacked over it.
+//! X11 window tweaks egui cannot express. MyWhoosh runs fullscreen under Proton. KWin keeps
+//! even "keep above" windows below the focused fullscreen window and only stacks
+//! on-screen-display windows over it; GNOME's mutter does not know that type but keeps "above"
+//! windows over fullscreen ones.
 use anyhow::{Context, Result, anyhow};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode, Window};
@@ -14,8 +15,10 @@ pub fn active() -> bool {
     *ACTIVE.get_or_init(|| std::env::var_os("DISPLAY").is_some() && x11rb::connect(None).is_ok())
 }
 
-/// Mark this process's still unmapped top-level window `title` as an on-screen display.
-/// Window managers without that type fall back to a normal window.
+/// Mark this process's still unmapped top-level window `title` as an on-screen display that
+/// stays above others. Both are properties, which window managers read when the window is
+/// mapped; requests sent while it is hidden are ignored. Window managers without the KDE type
+/// fall back to a normal window kept above.
 pub fn on_screen_display(title: &str) -> Result<()> {
     let (conn, screen) = x11rb::connect(None).context("connect to X11")?;
     let root = conn.setup().roots[screen].root;
@@ -32,6 +35,14 @@ pub fn on_screen_display(title: &str) -> Result<()> {
         atom("_NET_WM_WINDOW_TYPE")?,
         AtomEnum::ATOM,
         &types,
+    )?
+    .check()?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window,
+        atom("_NET_WM_STATE")?,
+        AtomEnum::ATOM,
+        &[atom("_NET_WM_STATE_ABOVE")?],
     )?
     .check()?;
     Ok(())

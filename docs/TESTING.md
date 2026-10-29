@@ -43,9 +43,10 @@ Build once: `cargo build --locked --release -p bikecontrol -p bikectl`.
    `XDG_DATA_HOME=<empty dir>` (first start: defaults, heart rate on).
 2. **Display fallbacks:** the same with `env -u DISPLAY` (native Wayland) and `DISPLAY=:97`
    (no X server); both must start.
-3. **Overlay above a fullscreen game (KDE Plasma):** start `osmolcontrol --demo --overlay`, make
-   any window fullscreen and focused. The overlay must stay visible on top, follow the mouse
-   when dragged (same distance as the pointer) and close with 🗙.
+3. **Overlay above a fullscreen game:** start `osmolcontrol --demo --overlay`, make any window
+   fullscreen and focused. The overlay must stay visible on top, follow the mouse when dragged
+   (same distance as the pointer) and close with 🗙. Checked on KDE Plasma 6.8 and on GNOME's
+   mutter 51 (headless, with a stand-in fullscreen window); other desktops are untested.
 4. **Command line:** `bikectl gears`, `bikectl gears <id>`, a custom `--front/--rear`, and wrong
    input (unknown template, duplicate teeth, wheel 900 mm, `decode` with bad hex) must give a
    clear message and exit code 1 or 2, never a panic.
@@ -64,6 +65,8 @@ Trainer, controller, optional heart rate strap, MyWhoosh. Tick each line.
 - [ ] Trainer off, press Start ride, then switch the trainer on: it is found without a restart.
 - [ ] Controller found and shown with battery; Ride tab shows trainer, controller, MyWhoosh green.
 - [ ] MyWhoosh pairs OsmolControl as Power Source; power and cadence match the trainer display.
+- [ ] In *Virtual trainer, MyWhoosh shifting* or *Controller only*, MyWhoosh still lists
+      OsmolControl as a controller (its LAN advertisement now says `model=OsmolControl`).
 
 **Shifting (OsmolControl gears, e.g. Claris 2×8)**
 - [ ] Each press changes resistance within about half a second, up and down.
