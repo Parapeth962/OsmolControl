@@ -590,6 +590,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "winit",
+ "x11rb",
 ]
 
 [[package]]
@@ -599,13 +601,11 @@ dependencies = [
  "anyhow",
  "bike-ble",
  "bike-core",
- "bike-dircon",
  "bike-gearing",
  "bike-mywhoosh",
  "bike-protocol",
  "bike-session",
  "clap",
- "serde",
  "serde_json",
  "tokio",
  "tracing",

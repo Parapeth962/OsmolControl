@@ -3,7 +3,8 @@
 use crate::{Drivetrain, Gear};
 
 const G: f64 = 9.80665;
-/// Largest change of the power target per second, so shifts and cadence spikes ramp smoothly.
+/// Largest change of the power target per second, so cadence spikes ramp smoothly. Shifts are
+/// not limited: the new gear's power applies at once.
 const MAX_SLEW_W_PER_S: f64 = 250.0;
 
 /// FTMS "Set Indoor Bike Simulation Parameters" (op 0x11), in SI units.
@@ -98,6 +99,10 @@ impl VirtualShifter {
         };
         let moved = next != self.index;
         self.index = next;
+        if moved {
+            // Skip the slew limit so the shift is felt immediately.
+            self.target_w = None;
+        }
         moved
     }
 
@@ -228,6 +233,13 @@ mod tests {
         let first = s.update(Some(60.0), 0.5).unwrap_or_default();
         let jump = s.update(Some(120.0), 0.5).unwrap_or_default();
         assert!(jump - first <= MAX_SLEW_W_PER_S * 0.5 + 1e-9);
+        // A shift jumps straight to the new gear's power.
+        assert!(s.shift(true));
+        let shifted = s.update(Some(120.0), 0.01).unwrap_or_default();
+        let wanted = s
+            .simulation
+            .map(|road| road.power_w(s.virtual_speed_kmh(120.0) / 3.6, 84.0));
+        assert_eq!(Some(shifted), wanted);
         let stopped = s.update(None, 100.0).unwrap_or_default();
         assert_eq!(stopped, 0.0);
         s.clear_simulation();

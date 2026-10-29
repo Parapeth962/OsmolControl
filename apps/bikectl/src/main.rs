@@ -14,6 +14,9 @@ use tokio::{
 mod gears;
 mod start;
 
+/// Scan length before picking a device given by ID or name.
+const FIND_SECONDS: u64 = 3;
+
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -43,6 +46,9 @@ enum Command {
         /// Rider plus bike mass for the road physics.
         #[arg(long, default_value_t = 84.0, value_parser = mass)]
         mass_kg: f64,
+        /// Do not look for a heart rate strap.
+        #[arg(long)]
+        no_heart_rate: bool,
     },
     /// List Bluetooth adapters.
     Adapters,
@@ -78,7 +84,7 @@ enum Command {
         /// Concrete local LAN IPv4 address reachable from the MyWhoosh host.
         #[arg(long)]
         bind: Ipv4Addr,
-        #[arg(long, default_value_t = 36867)]
+        #[arg(long, default_value_t = bike_session::CONTROLLER_PORT)]
         port: u16,
         #[arg(long, default_value = bike_core::APP_NAME)]
         name: String,
@@ -188,6 +194,7 @@ async fn main() -> Result<()> {
         trainer_bridge: false,
         gears: None,
         mass_kg: 84.0,
+        no_heart_rate: false,
     });
     // Quick start prints its own friendly status; diagnostics stay available via RUST_LOG.
     let default_filter = if matches!(command, Command::Start { .. }) {
@@ -209,6 +216,7 @@ async fn main() -> Result<()> {
             trainer_bridge,
             gears,
             mass_kg,
+            no_heart_rate,
         } => {
             start::run(start::Options {
                 adapter: cli.adapter,
@@ -217,6 +225,7 @@ async fn main() -> Result<()> {
                 bridge: trainer_bridge,
                 gears,
                 mass_kg,
+                heart_rate: !no_heart_rate,
             })
             .await?
         }
@@ -233,7 +242,7 @@ async fn main() -> Result<()> {
         }
         Command::Inspect { device } => {
             let a = bike_ble::adapter(cli.adapter).await?;
-            let p = bike_ble::find(&a, &device, 3).await?;
+            let p = bike_ble::find(&a, &device, FIND_SECONDS).await?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&bike_ble::inspect(&p).await?)?
@@ -245,7 +254,7 @@ async fn main() -> Result<()> {
             seconds,
         } => {
             let a = bike_ble::adapter(cli.adapter).await?;
-            let p = bike_ble::find(&a, &device, 3).await?;
+            let p = bike_ble::find(&a, &device, FIND_SECONDS).await?;
             let (stop, rx) = shutdown(seconds);
             let (tx, printer) = output();
             let result = bike_ble::monitor_with_readiness(
@@ -304,7 +313,7 @@ async fn main() -> Result<()> {
             let a = bike_ble::adapter(cli.adapter).await?;
             let mut selected = vec![];
             for d in &devices {
-                selected.push((d.clone(), bike_ble::find(&a, d, 3).await?));
+                selected.push((d.clone(), bike_ble::find(&a, d, FIND_SECONDS).await?));
             }
             let (stop, rx) = shutdown(seconds);
             let (tx, printer) = output();
@@ -351,10 +360,10 @@ async fn main() -> Result<()> {
             if trainer.is_some() || controller.is_some() {
                 let a = bike_ble::adapter(cli.adapter).await?;
                 if let Some(d) = trainer {
-                    selected.push((bike_ble::find(&a, &d, 3).await?, None));
+                    selected.push((bike_ble::find(&a, &d, FIND_SECONDS).await?, None));
                 }
                 if let Some(d) = controller {
-                    selected.push((bike_ble::find(&a, &d, 3).await?, map));
+                    selected.push((bike_ble::find(&a, &d, FIND_SECONDS).await?, map));
                 }
             }
             let (stop, rx) = shutdown(seconds);
@@ -414,4 +423,77 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("bikectl").chain(args.iter().copied()))
+    }
+
+    #[test]
+    fn cli_definition_is_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn start_is_the_default_and_its_flags_are_checked() {
+        assert!(parse(&[]).is_ok_and(|c| c.command.is_none()));
+        let Ok(Cli {
+            command:
+                Some(Command::Start {
+                    trainer_bridge,
+                    gears,
+                    mass_kg,
+                    no_heart_rate,
+                    ..
+                }),
+            ..
+        }) = parse(&[
+            "start",
+            "--trainer-bridge",
+            "--gears",
+            "claris-r2000-50-34-11-32",
+            "--mass-kg",
+            "77",
+            "--no-heart-rate",
+        ])
+        else {
+            panic!("start flags rejected");
+        };
+        assert!(trainer_bridge && no_heart_rate);
+        assert_eq!(gears.as_deref(), Some("claris-r2000-50-34-11-32"));
+        assert_eq!(mass_kg, 77.0);
+        // Gears need the trainer bridge; implausible masses are refused.
+        assert!(parse(&["start", "--gears", "x"]).is_err());
+        assert!(parse(&["start", "--mass-kg", "20"]).is_err());
+        assert!(parse(&["start", "--mass-kg", "abc"]).is_err());
+        assert!(parse(&["start", "--bind", "not-an-ip"]).is_err());
+    }
+
+    #[test]
+    fn other_commands_parse_with_their_defaults() {
+        let Ok(Cli {
+            command: Some(Command::ConnectMywhoosh { port, name, .. }),
+            adapter,
+        }) = parse(&["connect-mywhoosh", "--bind", "192.168.1.10"])
+        else {
+            panic!("connect-mywhoosh rejected");
+        };
+        assert_eq!(port, bike_session::CONTROLLER_PORT);
+        assert_eq!(name, bike_core::APP_NAME);
+        assert_eq!(adapter, 0);
+        assert!(parse(&["connect-mywhoosh"]).is_err(), "--bind is required");
+        assert!(parse(&["--adapter", "1", "adapters"]).is_ok_and(|c| c.adapter == 1));
+        assert!(
+            parse(&["gears", "--front", "50/34"]).is_err(),
+            "--rear is required"
+        );
+        assert!(parse(&["gears", "x", "--front", "50", "--rear", "11"]).is_err());
+        assert!(parse(&["monitor"]).is_err(), "a device is required");
+        assert!(parse(&["decode", "2ad2", "44000000"]).is_ok());
+    }
 }

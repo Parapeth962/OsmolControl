@@ -29,7 +29,6 @@ bike-dircon = { path = "crates/bike-dircon" }
 bike-session = { path = "crates/bike-session" }
 egui = "0.31"
 eframe = { version = "0.31", features = ["glow", "persistence"] }
-egui_extras = "0.31"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

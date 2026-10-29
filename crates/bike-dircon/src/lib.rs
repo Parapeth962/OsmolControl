@@ -17,6 +17,8 @@ pub use gatt::{Characteristic, Gatt, Service, sig};
 const SERVICE: &str = "_wahoo-fitness-tnp._tcp.local.";
 const SERVICE_NAME_LEN: u8 = 18;
 const MAX_CLIENTS: usize = 4;
+/// A client that cannot take a packet in this time is dropped.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -51,7 +53,7 @@ fn pseudo_mac(seed: &str) -> String {
 }
 
 async fn write(socket: &mut TcpStream, packet: &codec::Packet) -> Result<()> {
-    tokio::time::timeout(Duration::from_secs(3), socket.write_all(&packet.encode()))
+    tokio::time::timeout(WRITE_TIMEOUT, socket.write_all(&packet.encode()))
         .await
         .context("slow DirCon client")??;
     Ok(())

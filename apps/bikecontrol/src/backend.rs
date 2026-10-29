@@ -43,17 +43,12 @@ impl Backend {
 
     /// Sample values for trying the interface without devices; labelled as demo in the UI.
     pub fn show_demo(&self) {
-        let d = bike_gearing::TEMPLATES[0].drivetrain().ok();
-        let gear = d.as_ref().map(|d| {
-            let g = d.gears()[d.default_gear() - 1];
-            bike_session::GearInfo {
-                number: g.number,
-                of: d.gears().len(),
-                chainring: g.chainring,
-                cog: g.cog,
-                ratio: g.ratio,
-            }
+        let gear = bike_gearing::TEMPLATES[0].drivetrain().ok().map(|d| {
+            let gears = d.gears();
+            bike_session::GearInfo::new(&gears[d.default_gear() - 1], gears.len())
         });
+        // Readings stay fresh for an hour of demo.
+        let fresh = Some(Instant::now() + Duration::from_secs(3600));
         self.status_tx.send_modify(|s| {
             s.phase = bike_session::Phase::Running;
             s.address = Some(std::net::Ipv4Addr::new(192, 168, 1, 10));
@@ -73,12 +68,12 @@ impl Backend {
                 battery_percent: None,
             };
             s.heart_rate_bpm = Some(142);
-            s.heart_rate_at = Some(Instant::now() + Duration::from_secs(3600));
+            s.heart_rate_at = fresh;
             s.app_trainer_links = 1;
             s.power_w = Some(182);
             s.cadence_rpm = Some(88.0);
             s.speed_kmh = Some(31.4);
-            s.telemetry_at = Some(Instant::now() + Duration::from_secs(3600));
+            s.telemetry_at = fresh;
             s.gearing_name = Some(bike_gearing::TEMPLATES[0].name.into());
             s.gear = gear;
             s.control = bike_session::Control::Simulation;
@@ -121,7 +116,7 @@ impl Backend {
         self.session = Some((stop, job));
     }
 
-    pub fn stop(&mut self) {
+    pub fn stop(&self) {
         if let Some((stop, _)) = &self.session {
             let _ = stop.send(true);
         }

@@ -18,6 +18,12 @@ pub mod bridge;
 pub const DIRCON_PORT: u16 = 36866;
 pub const CONTROLLER_PORT: u16 = 36867;
 const LOG_LINES: usize = 200;
+/// Length of each Bluetooth search; searches repeat until something is found.
+const SCAN_SECONDS: u64 = 5;
+/// Trainer telemetry older than this is not shown or used.
+pub const TELEMETRY_MAX_AGE: Duration = Duration::from_secs(3);
+/// Heart rate older than this is not shown.
+const HEART_RATE_MAX_AGE: Duration = Duration::from_secs(5);
 
 /// How OsmolControl works with MyWhoosh.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -115,6 +121,9 @@ pub struct Settings {
     pub favorites: Vec<String>,
     /// Label of the one controller profile to look for; any known controller when `None`.
     pub controller: Option<String>,
+    /// Look for a heart rate strap and pass its readings to MyWhoosh. On by default, so
+    /// settings saved before this option existed keep the strap.
+    pub heart_rate: bool,
 }
 
 impl Default for Settings {
@@ -129,6 +138,7 @@ impl Default for Settings {
             my_setups: Vec::new(),
             favorites: Vec::new(),
             controller: None,
+            heart_rate: true,
         }
     }
 }
@@ -209,6 +219,19 @@ pub struct GearInfo {
     pub ratio: f64,
 }
 
+impl GearInfo {
+    /// `gear` out of `of` gears.
+    pub fn new(gear: &bike_gearing::Gear, of: usize) -> Self {
+        Self {
+            number: gear.number,
+            of,
+            chainring: gear.chainring,
+            cog: gear.cog,
+            ratio: gear.ratio,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Status {
     pub phase: Phase,
@@ -243,18 +266,18 @@ impl Status {
     /// Telemetry is shown only while fresh.
     pub fn telemetry_fresh(&self) -> bool {
         self.telemetry_at
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(3))
+            .is_some_and(|t| t.elapsed() < TELEMETRY_MAX_AGE)
     }
 
     /// Heart rate is shown only while fresh.
     pub fn heart_rate_fresh(&self) -> bool {
         self.heart_rate_at
-            .is_some_and(|t| t.elapsed() < Duration::from_secs(5))
+            .is_some_and(|t| t.elapsed() < HEART_RATE_MAX_AGE)
     }
 }
 
 pub type StatusTx = Arc<watch::Sender<Status>>;
-pub type Actions = broadcast::Sender<(Instant, Action)>;
+pub use bike_ble::Actions;
 
 pub fn log(status: &StatusTx, line: impl Into<String>) {
     let line = line.into();
@@ -330,6 +353,47 @@ where
             _ = stop.changed() => return Ok(None),
         }
         log(status, waiting);
+    }
+}
+
+/// Find the trainer and read its tables. Bluetooth remembers trainers that are switched off,
+/// and connecting to one times out; that is logged and the search goes on, so a ride can be
+/// started before the trainer is on. `None` once stopped.
+async fn find_and_connect<P, S, F, FFut, C, CFut>(
+    stop: &mut watch::Receiver<bool>,
+    status: &StatusTx,
+    mut find: F,
+    mut connect: C,
+) -> Result<Option<(P, S)>>
+where
+    F: FnMut() -> FFut,
+    FFut: std::future::Future<Output = Result<Option<(P, String)>>>,
+    P: Clone,
+    C: FnMut(P, String) -> CFut,
+    CFut: std::future::Future<Output = Result<S>>,
+{
+    loop {
+        let found = search(
+            stop,
+            status,
+            "Still looking for a trainer (any FTMS smart trainer).",
+            &mut find,
+        )
+        .await?;
+        let Some((p, name)) = found else {
+            return Ok(None);
+        };
+        let connected = tokio::select! {
+            c = connect(p.clone(), name.clone()) => c,
+            _ = stop.changed() => return Ok(None),
+        };
+        match connected {
+            Ok(tables) => return Ok(Some((p, tables))),
+            Err(e) => log(
+                status,
+                format!("Cannot connect to {name} ({e:#}); is it switched on? Still looking."),
+            ),
+        }
     }
 }
 
@@ -577,17 +641,19 @@ async fn session(
             status,
             "Looking for your trainer... pedal a few strokes to wake it up.",
         );
-        let found = search(
-            &mut waiting,
-            status,
-            "Still looking for a trainer (any FTMS smart trainer).",
-            || bike_ble::trainer::find_trainer(&adapter, 5),
-        )
-        .await?;
-        let Some((p, name)) = found else {
+        let found =
+            find_and_connect(
+                &mut waiting,
+                status,
+                || bike_ble::trainer::find_trainer(&adapter, SCAN_SECONDS),
+                |p: bike_ble::Peripheral, name| async move {
+                    bike_ble::trainer::snapshot(&p, name).await
+                },
+            )
+            .await?;
+        let Some((p, snapshot)) = found else {
             return Ok(());
         };
-        let snapshot = bike_ble::trainer::snapshot(&p, name).await?;
         log(
             status,
             format!(
@@ -610,7 +676,9 @@ async fn session(
         if *waiting.borrow() {
             return Ok(());
         }
-        if let Some(found) = bike_ble::find_known_controller(&adapter, 5, &profiles).await? {
+        if let Some(found) =
+            bike_ble::find_known_controller(&adapter, SCAN_SECONDS, &profiles).await?
+        {
             break Some(found);
         }
         if trainer.is_some() {
@@ -623,29 +691,10 @@ async fn session(
         log(status, "Still looking for a controller.");
     };
 
-    // Optional: one scan, and the ride goes on without a strap.
-    let strap = if trainer.is_some() {
-        match bike_ble::find_heart_rate(&adapter, 5).await {
-            Ok(Some((p, name))) => {
-                log(status, format!("Found heart rate sensor {name}."));
-                status.send_modify(|s| s.heart_rate.name = Some(name));
-                Some(p)
-            }
-            Ok(None) => {
-                log(
-                    status,
-                    "No heart rate sensor found; continuing without one.",
-                );
-                None
-            }
-            Err(e) => {
-                log(status, format!("Heart rate sensor search failed: {e:#}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
+    let strap = find_strap(settings.heart_rate, trainer.is_some(), status, || {
+        bike_ble::find_heart_rate(&adapter, SCAN_SECONDS)
+    })
+    .await;
 
     let mut jobs = JoinSet::new();
     let shifting = shifter.is_some();
@@ -790,6 +839,46 @@ async fn session(
     finish(jobs, stop).await
 }
 
+/// Optional: one scan, and the ride goes on without a strap. Only when enabled in the settings
+/// and with a trainer, which carries the readings to the app; otherwise `search` never runs.
+async fn find_strap<P, Fut>(
+    enabled: bool,
+    has_trainer: bool,
+    status: &StatusTx,
+    search: impl FnOnce() -> Fut,
+) -> Option<P>
+where
+    Fut: std::future::Future<Output = Result<Option<(P, String)>>>,
+{
+    if !enabled {
+        if has_trainer {
+            log(status, "Heart rate sensor off in Settings.");
+        }
+        return None;
+    }
+    if !has_trainer {
+        return None;
+    }
+    match search().await {
+        Ok(Some((p, name))) => {
+            log(status, format!("Found heart rate sensor {name}."));
+            status.send_modify(|s| s.heart_rate.name = Some(name));
+            Some(p)
+        }
+        Ok(None) => {
+            log(
+                status,
+                "No heart rate sensor found; continuing without one.",
+            );
+            None
+        }
+        Err(e) => {
+            log(status, format!("Heart rate sensor search failed: {e:#}"));
+            None
+        }
+    }
+}
+
 /// Relay the strap's measurements to the app. Losing the strap is logged and never ends the ride.
 fn heart_rate(
     jobs: &mut JoinSet<Result<()>>,
@@ -914,6 +1003,123 @@ mod tests {
             custom.drivetrain().map(|(n, d)| (n, d.gears().len())).ok(),
             Some(("Custom".into(), 16))
         );
+    }
+
+    #[tokio::test]
+    async fn a_trainer_that_is_off_does_not_end_the_ride() {
+        let status: StatusTx = Arc::new(watch::channel(Status::default()).0);
+        let (stop_tx, mut stop) = watch::channel(false);
+        let attempts = std::sync::atomic::AtomicUsize::new(0);
+        let find = || async { Ok(Some(("trainer", "Think X222".to_owned()))) };
+        // Off at first (connect times out), switched on for the third try.
+        let connect = |_: &str, name: String| {
+            let n = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async move {
+                if n < 2 {
+                    Err(anyhow!("connect: timed out"))
+                } else {
+                    Ok(format!("tables of {name}"))
+                }
+            }
+        };
+        let found = find_and_connect(&mut stop, &status, find, connect).await;
+        assert_eq!(
+            found.ok().flatten(),
+            Some(("trainer", "tables of Think X222".into()))
+        );
+        let cannot = |l: &&String| l.contains("Cannot connect to Think X222");
+        assert_eq!(status.borrow().log.iter().filter(cannot).count(), 2);
+
+        // Stop ends a hung connection attempt at once, without an error.
+        let hung = |_: &str, _: String| std::future::pending::<Result<String>>();
+        let waiting = tokio::spawn({
+            let status = status.clone();
+            let mut stop = stop_tx.subscribe();
+            async move { find_and_connect(&mut stop, &status, find, hung).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(stop_tx.send(true).is_ok());
+        let ended = tokio::time::timeout(Duration::from_secs(1), waiting).await;
+        assert!(ended.is_ok_and(|r| r.is_ok_and(|r| r.is_ok_and(|t| t.is_none()))));
+    }
+
+    #[test]
+    fn readings_are_shown_only_while_fresh() {
+        let ago = |s: u64| Instant::now().checked_sub(Duration::from_secs(s));
+        let mut s = Status::default();
+        assert!(
+            !s.telemetry_fresh() && !s.heart_rate_fresh(),
+            "nothing received yet"
+        );
+        s.telemetry_at = ago(2);
+        s.heart_rate_at = ago(4);
+        assert!(s.telemetry_fresh() && s.heart_rate_fresh());
+        s.telemetry_at = ago(4);
+        s.heart_rate_at = ago(6);
+        assert!(!s.telemetry_fresh() && !s.heart_rate_fresh());
+    }
+
+    #[test]
+    fn gear_info_copies_the_gear() {
+        let d = Drivetrain::new(&[50, 34], &[11, 28], 2136).unwrap_or_else(|e| panic!("{e}"));
+        let gears = d.gears();
+        let info = GearInfo::new(&gears[0], gears.len());
+        assert_eq!(
+            (info.number, info.of, info.chainring, info.cog),
+            (1, 4, 34, 28)
+        );
+        assert_eq!(info.ratio, gears[0].ratio);
+    }
+
+    #[test]
+    fn heart_rate_option_defaults_on_and_can_be_turned_off() {
+        // Saved before the option existed: the strap stays in use.
+        let old: Settings = serde_json::from_str(r#"{"mass_kg": 70.0}"#).unwrap_or_default();
+        assert!(old.heart_rate);
+        let off: Settings =
+            serde_json::from_str(r#"{"heart_rate": false}"#).unwrap_or_else(|e| panic!("{e}"));
+        assert!(!off.heart_rate);
+        let json = serde_json::to_string(&off).unwrap_or_default();
+        assert!(!serde_json::from_str::<Settings>(&json).is_ok_and(|s| s.heart_rate));
+    }
+
+    #[tokio::test]
+    async fn strap_is_searched_only_when_enabled_with_a_trainer() {
+        let status: StatusTx = Arc::new(watch::channel(Status::default()).0);
+        let searches = std::sync::atomic::AtomicUsize::new(0);
+        let found = || async {
+            searches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(("strap", "HRM-Pro".to_owned())))
+        };
+        let count = || searches.load(std::sync::atomic::Ordering::SeqCst);
+
+        // Off: never searched, with or without a trainer, and nothing is shown.
+        assert_eq!(find_strap(false, true, &status, found).await, None);
+        assert_eq!(find_strap(false, false, &status, found).await, None);
+        assert_eq!(count(), 0);
+        assert_eq!(status.borrow().heart_rate.name, None);
+        assert!(
+            status
+                .borrow()
+                .log
+                .iter()
+                .any(|l| l.contains("off in Settings"))
+        );
+
+        // On without a trainer: nothing could carry the readings, so no search either.
+        assert_eq!(find_strap(true, false, &status, found).await, None);
+        assert_eq!(count(), 0);
+
+        // On with a trainer: exactly one search, and the strap is used.
+        assert_eq!(find_strap(true, true, &status, found).await, Some("strap"));
+        assert_eq!(count(), 1);
+        assert_eq!(status.borrow().heart_rate.name.as_deref(), Some("HRM-Pro"));
+
+        // A failed or empty search never ends the ride.
+        let failed = || async { Err::<Option<(&str, String)>, _>(anyhow!("adapter busy")) };
+        assert_eq!(find_strap(true, true, &status, failed).await, None);
+        let empty = || async { Ok::<Option<(&str, String)>, anyhow::Error>(None) };
+        assert_eq!(find_strap(true, true, &status, empty).await, None);
     }
 
     #[test]

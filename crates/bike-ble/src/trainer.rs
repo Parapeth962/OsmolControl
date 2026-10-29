@@ -167,7 +167,7 @@ pub async fn run(
             return result;
         }
         let _ = bounded("disconnect", crate::release(&p)).await;
-        if started.elapsed() > Duration::from_secs(30) {
+        if started.elapsed() > crate::STABLE_AFTER {
             retry.stable();
         }
         let error = result
@@ -219,7 +219,7 @@ async fn session(
     tracing::info!("trainer connected");
     let _ = connected.send(true);
     let mut pace = tokio::time::interval(WRITE_INTERVAL);
-    let mut health = tokio::time::interval(Duration::from_secs(2));
+    let mut health = tokio::time::interval(crate::HEALTH_INTERVAL);
     loop {
         tokio::select! {
             _ = stop.changed() => return Ok(()),

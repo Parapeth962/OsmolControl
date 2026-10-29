@@ -71,6 +71,9 @@ builds OsmolControl, asks whether you want MyWhoosh or MyWhoosh HD, and installs
 Proton on the same PC, with desktop and menu shortcuts and automatic game updates. Linux users who only want MyWhoosh can use the standalone installer at
 [mywhoosh-linux-installer](https://github.com/Parapeth962/mywhoosh-linux-installer).
 
+To update OsmolControl later, run the same command again. It finds the installed MyWhoosh,
+rebuilds OsmolControl and refreshes the launcher; the game and your login stay as they are.
+
 ## 3. First ride, step by step
 
 1. **Wake up your devices.** Switch the trainer on (pedal a few strokes) and press a button on
@@ -86,7 +89,8 @@ Proton on the same PC, with desktop and menu shortcuts and automatic game update
    - MyWhoosh on the same Linux PC (installed by `install.sh`): tap **BLE** and choose
      **OsmolControl** as the Power Source.
    - **Heart rate:** put the strap on (moisten the electrodes) *before* pressing Start ride;
-     OsmolControl looks for it once, right after the controller. On Linux pick **OsmolControl
+     OsmolControl looks for it once, right after the controller, if *Use a heart rate strap* is
+     on in Settings. On Linux pick **OsmolControl
      HR** as the Heart Rate source under **BLE**. Over LAN MyWhoosh may offer **OsmolControl**
      itself as the heart rate source (not tested yet).
 6. **Turn off Virtual Shifting in MyWhoosh's settings**, so only one app shifts.
@@ -116,8 +120,10 @@ Proton on the same PC, with desktop and menu shortcuts and automatic game update
 ![Overlay](images/overlay.png)
 
 Click **Overlay** (top bar) for this small always-on-top window with gear, power, cadence and
-grade. Drag it over MyWhoosh. The **− / +** buttons shift; **✕** closes it. On Linux with
-Wayland, use your desktop's *Keep above others* window option if it does not stay on top.
+grade. Drag it over MyWhoosh. The **− / +** buttons shift; **✕** closes it. On Linux
+OsmolControl runs as an X11 window (through XWayland on Wayland desktops), like MyWhoosh under
+Proton, so the overlay stays above the game even in fullscreen on KDE Plasma. On other desktops
+use *Keep above others* if it hides behind a fullscreen game.
 
 ### Gears
 
@@ -153,6 +159,8 @@ Wayland, use your desktop's *Keep above others* window option if it does not sta
   grade. MyWhoosh only passes half of its grade on to the trainer; OsmolControl undoes that, so
   **Real road 100 %** rides the grade shown in MyWhoosh. Drag the slider or pick a preset:
   Recovery 25 %, Easy 50 %, Moderate 75 %, Real road 100 %, Hard 125 %, Brutal 150 %.
+- **Heart rate:** *Use a heart rate strap* (on by default). Turn it off to skip the strap search
+  when you ride without one; the ride then starts a few seconds sooner.
 - **Network address:** leave on *Automatic* unless your computer has several networks.
 - **Bluetooth adapter:** only change with several Bluetooth adapters.
 

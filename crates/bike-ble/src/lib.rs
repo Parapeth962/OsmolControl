@@ -3,7 +3,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use bike_core::{PacketMap, RetryBudget};
 use bike_protocol::Action;
 use btleplug::{
-    api::{Central, CharPropFlags, Manager as _, Peripheral as _, ScanFilter},
+    api::{
+        Central, CharPropFlags, Manager as _, Peripheral as _, PeripheralProperties, ScanFilter,
+    },
     platform::{Adapter, Manager},
 };
 use futures::StreamExt;
@@ -68,6 +70,17 @@ struct SessionSignals {
     ready: Option<watch::Sender<bool>>,
 }
 const IO_TIMEOUT: Duration = Duration::from_secs(12);
+/// How often a live link is checked for a silent disconnect.
+pub(crate) const HEALTH_INTERVAL: Duration = Duration::from_secs(2);
+/// A device sending measurements is reported stale after this long without one.
+const STALE_AFTER: Duration = Duration::from_secs(5);
+/// A connection that lasted this long resets the reconnect budget.
+pub(crate) const STABLE_AFTER: Duration = Duration::from_secs(30);
+/// Standard measurements: Indoor Bike Data, Cycling Power, CSC and Heart Rate.
+const MEASUREMENTS: [u16; 4] = [0x2ad2, 0x2a63, 0x2a5b, 0x2a37];
+/// Battery Level and FTMS Machine Status.
+const BATTERY: u16 = 0x2a19;
+const MACHINE_STATUS: u16 = 0x2ada;
 pub type Events = mpsc::Sender<Value>;
 pub type Actions = broadcast::Sender<(Instant, Action)>;
 async fn bounded<T>(label: &str, f: impl Future<Output = btleplug::Result<T>>) -> Result<T> {
@@ -82,22 +95,22 @@ pub fn timestamp_ms() -> u128 {
         .unwrap_or_default()
         .as_millis()
 }
-async fn emit(tx: &Events, event: Value) {
+fn emit(tx: &Events, event: Value) {
     if let Err(error) = tx.try_send(event) {
-        tracing::warn!(%error,"diagnostic event dropped; consumer too slow or closed");
+        tracing::warn!(%error, "diagnostic event dropped; consumer too slow or closed");
     }
+}
+fn notifies(c: &btleplug::api::Characteristic) -> bool {
+    c.properties
+        .intersects(CharPropFlags::NOTIFY | CharPropFlags::INDICATE)
 }
 /// Stop notifications, then disconnect. BlueZ keeps a notification registered for as long as the
 /// process's D-Bus connection lives, so a later session in the same process (the GUI's next
 /// ride) would otherwise receive every notification twice. Unsubscribe errors are ignored:
 /// not every characteristic was subscribed, and a lost link cannot be unsubscribed.
 pub(crate) async fn release(p: &Peripheral) -> btleplug::Result<()> {
-    for c in p.characteristics() {
-        if c.properties
-            .intersects(CharPropFlags::NOTIFY | CharPropFlags::INDICATE)
-        {
-            let _ = p.unsubscribe(&c).await;
-        }
+    for c in p.characteristics().iter().filter(|c| notifies(c)) {
+        let _ = p.unsubscribe(c).await;
     }
     p.disconnect().await
 }
@@ -118,27 +131,48 @@ pub async fn adapters() -> Result<Vec<String>> {
     }
     Ok(out)
 }
-pub async fn scan(a: &Adapter, seconds: u64) -> Result<Vec<Value>> {
+/// Scan for `seconds`, then return every known device with its advertisement.
+async fn scan_devices(
+    a: &Adapter,
+    seconds: u64,
+) -> Result<Vec<(Peripheral, PeripheralProperties)>> {
     bounded("start scan", a.start_scan(ScanFilter::default())).await?;
-    let cancelled = tokio::select! {_=tokio::time::sleep(Duration::from_secs(seconds))=>false,_=tokio::signal::ctrl_c()=>true};
+    let cancelled = tokio::select! {
+        _ = tokio::time::sleep(Duration::from_secs(seconds)) => false,
+        _ = tokio::signal::ctrl_c() => true,
+    };
     bounded("stop scan", a.stop_scan()).await?;
     if cancelled {
         bail!("scan cancelled");
     }
-    let mut rows = vec![];
+    let mut found = vec![];
     for p in bounded("list peripherals", a.peripherals()).await? {
-        if let Some(v) = bounded("read advertisement", p.properties()).await? {
-            rows.push(json!({"id":p.id().to_string(),"name":v.local_name,"rssi":v.rssi,"services":v.services,"manufacturer_data":v.manufacturer_data,"service_data":v.service_data}));
+        if let Some(props) = bounded("read advertisement", p.properties()).await? {
+            found.push((p, props));
         }
     }
-    Ok(rows)
+    Ok(found)
+}
+pub async fn scan(a: &Adapter, seconds: u64) -> Result<Vec<Value>> {
+    Ok(scan_devices(a, seconds)
+        .await?
+        .into_iter()
+        .map(|(p, v)| {
+            json!({
+                "id": p.id().to_string(),
+                "name": v.local_name,
+                "rssi": v.rssi,
+                "services": v.services,
+                "manufacturer_data": v.manufacturer_data,
+                "service_data": v.service_data,
+            })
+        })
+        .collect())
 }
 pub async fn find(a: &Adapter, selector: &str, seconds: u64) -> Result<Peripheral> {
-    let _ = scan(a, seconds).await?;
     let mut matches = vec![];
-    for p in bounded("list peripherals", a.peripherals()).await? {
-        let props = bounded("read advertisement", p.properties()).await?;
-        let name = props.and_then(|v| v.local_name);
+    for (p, props) in scan_devices(a, seconds).await? {
+        let name = props.local_name;
         if p.id().to_string().eq_ignore_ascii_case(selector) || name.as_deref() == Some(selector) {
             matches.push(p);
         }
@@ -159,12 +193,8 @@ pub(crate) async fn find_service(
     service: Uuid,
     on_air: bool,
 ) -> Result<Option<(Peripheral, String)>> {
-    let _ = scan(a, seconds).await?;
     let mut best: Option<(i16, Peripheral, String)> = None;
-    for p in bounded("list peripherals", a.peripherals()).await? {
-        let Some(props) = bounded("read advertisement", p.properties()).await? else {
-            continue;
-        };
+    for (p, props) in scan_devices(a, seconds).await? {
         if !props.services.contains(&service) || (on_air && props.rssi.is_none()) {
             continue;
         }
@@ -186,11 +216,7 @@ pub async fn find_known_controller(
     seconds: u64,
     profiles: &[bike_core::ControllerProfile],
 ) -> Result<Option<(Peripheral, bike_core::ControllerProfile, String)>> {
-    let _ = scan(a, seconds).await?;
-    for p in bounded("list peripherals", a.peripherals()).await? {
-        let Some(props) = bounded("read advertisement", p.properties()).await? else {
-            continue;
-        };
+    for (p, props) in scan_devices(a, seconds).await? {
         let services: Vec<String> = props.services.iter().map(Uuid::to_string).collect();
         let name = props.local_name.unwrap_or_default();
         if let Some(profile) = bike_core::controller_profile(profiles, &name, &services) {
@@ -214,12 +240,9 @@ pub struct Nearby {
 }
 /// One bounded scan; named devices only, strongest signal first.
 pub async fn nearby(a: &Adapter, seconds: u64) -> Result<Vec<Nearby>> {
-    let _ = scan(a, seconds).await?;
     let mut found = vec![];
-    for p in bounded("list peripherals", a.peripherals()).await? {
-        if let Some(props) = bounded("read advertisement", p.properties()).await?
-            && let Some(name) = props.local_name.filter(|n| !n.trim().is_empty())
-        {
+    for (p, props) in scan_devices(a, seconds).await? {
+        if let Some(name) = props.local_name.filter(|n| !n.trim().is_empty()) {
             found.push(Nearby {
                 peripheral: p,
                 name,
@@ -244,19 +267,15 @@ pub async fn listen_all(
         connect(p).await?;
         let mut notifications = bounded("notification stream", p.notifications()).await?;
         let mut count = 0;
-        for c in p.characteristics() {
-            if c.properties
-                .intersects(CharPropFlags::NOTIFY | CharPropFlags::INDICATE)
-            {
-                bounded("subscribe", p.subscribe(&c)).await?;
-                count += 1;
-            }
+        for c in p.characteristics().iter().filter(|c| notifies(c)) {
+            bounded("subscribe", p.subscribe(c)).await?;
+            count += 1;
         }
         if count == 0 {
             bail!("this device sends no notifications, so it cannot be a supported controller");
         }
         let _ = ready.send(());
-        let mut health = tokio::time::interval(Duration::from_secs(2));
+        let mut health = tokio::time::interval(HEALTH_INTERVAL);
         loop {
             tokio::select! {
                 _ = stop.changed() => return Ok(()),
@@ -290,9 +309,9 @@ fn decode(uuid: Uuid, bytes: &[u8]) -> Value {
     match standard_id(uuid) {
         Some(id) => match bike_protocol::characteristic(id, bytes) {
             Ok(v) => v,
-            Err(e) => json!({"decode_error":e.to_string(),"raw_hex":bike_protocol::hex(bytes)}),
+            Err(e) => json!({"decode_error": e.to_string(), "raw_hex": bike_protocol::hex(bytes)}),
         },
-        None => json!({"raw_hex":bike_protocol::hex(bytes)}),
+        None => json!({"raw_hex": bike_protocol::hex(bytes)}),
     }
 }
 async fn connect(p: &impl Link) -> Result<()> {
@@ -302,36 +321,57 @@ async fn connect(p: &impl Link) -> Result<()> {
     bounded("discover services", p.discover()).await
 }
 pub async fn inspect(p: &Peripheral) -> Result<Value> {
-    let result=async {
-        connect(p).await?;let mut services=vec![];
-        for service in p.services(){let mut chars=vec![];
+    let result = async {
+        connect(p).await?;
+        let mut services = vec![];
+        for service in p.services() {
+            let mut chars = vec![];
             for c in service.characteristics {
-                let mut row=json!({"uuid":c.uuid,"properties":format!("{:?}",c.properties),"descriptors":c.descriptors.iter().map(|d|d.uuid.to_string()).collect::<Vec<_>>()});
-                if c.properties.contains(CharPropFlags::READ){match bounded("read characteristic",p.read(&c)).await{Ok(bytes)=>{row["raw_hex"]=json!(bike_protocol::hex(&bytes));row["value"]=decode(c.uuid,&bytes);},Err(e)=>row["error"]=json!(format!("{e:#}"))}}
+                let descriptors: Vec<String> =
+                    c.descriptors.iter().map(|d| d.uuid.to_string()).collect();
+                let mut row = json!({
+                    "uuid": c.uuid,
+                    "properties": format!("{:?}", c.properties),
+                    "descriptors": descriptors,
+                });
+                if c.properties.contains(CharPropFlags::READ) {
+                    match bounded("read characteristic", p.read(&c)).await {
+                        Ok(bytes) => {
+                            row["raw_hex"] = json!(bike_protocol::hex(&bytes));
+                            row["value"] = decode(c.uuid, &bytes);
+                        }
+                        Err(e) => row["error"] = json!(format!("{e:#}")),
+                    }
+                }
                 chars.push(row);
             }
-            services.push(json!({"uuid":service.uuid,"primary":service.primary,"characteristics":chars}));
-        }Ok::<_,anyhow::Error>(json!({"id":p.id().to_string(),"timestamp_ms":timestamp_ms(),"services":services}))
-    }.await;
-    let cleanup = bounded("disconnect", p.disconnect()).await;
-    match result {
-        Ok(v) => {
-            cleanup?;
-            Ok(v)
+            services.push(json!({
+                "uuid": service.uuid,
+                "primary": service.primary,
+                "characteristics": chars,
+            }));
         }
-        Err(e) => Err(e),
+        Ok::<_, anyhow::Error>(json!({
+            "id": p.id().to_string(),
+            "timestamp_ms": timestamp_ms(),
+            "services": services,
+        }))
     }
+    .await;
+    let cleanup = bounded("disconnect", p.disconnect()).await;
+    let inspected = result?;
+    cleanup?;
+    Ok(inspected)
 }
 /// Mapped controllers skip Battery notifications: with 2A19 also subscribed, the V100 delivered
 /// only some FEA1 presses (docs/devices/v100.md), and battery is not forwarded to MyWhoosh.
 fn wants_subscription(c: &btleplug::api::Characteristic, custom: Option<Uuid>) -> bool {
     let standard = match standard_id(c.uuid) {
-        Some(0x2a19) => custom.is_none(),
-        id => matches!(id, Some(0x2ad2 | 0x2a63 | 0x2a5b | 0x2a37 | 0x2ada)),
+        Some(BATTERY) => custom.is_none(),
+        Some(id) => id == MACHINE_STATUS || MEASUREMENTS.contains(&id),
+        None => false,
     };
-    (standard || custom == Some(c.uuid))
-        && c.properties
-            .intersects(CharPropFlags::NOTIFY | CharPropFlags::INDICATE)
+    (standard || custom == Some(c.uuid)) && notifies(c)
 }
 async fn session(
     p: &impl Link,
@@ -356,8 +396,7 @@ async fn session(
         if wants_subscription(&c, custom) {
             bounded("subscribe", p.listen(&c)).await?;
             count += 1;
-            has_measurements |=
-                matches!(standard_id(c.uuid), Some(0x2ad2 | 0x2a63 | 0x2a5b | 0x2a37));
+            has_measurements |= standard_id(c.uuid).is_some_and(|id| MEASUREMENTS.contains(&id));
             custom_found |= custom == Some(c.uuid);
         }
     }
@@ -374,29 +413,43 @@ async fn session(
         let _ = ready.send(true);
     }
     let id = p.label();
-    emit(
-        tx,
-        json!({"device":id,"event":"connected","timestamp_ms":timestamp_ms()}),
-    )
-    .await;
-    let mut health = tokio::time::interval(Duration::from_secs(2));
+    let event = |name: &str| json!({"device": id, "event": name, "timestamp_ms": timestamp_ms()});
+    emit(tx, event("connected"));
+    let mut health = tokio::time::interval(HEALTH_INTERVAL);
     let mut last = tokio::time::Instant::now();
     let mut stale = false;
     loop {
         tokio::select! {
-            _=stop.changed()=>return Ok(()),
-            n=notifications.next()=>{
-                let n=n.ok_or_else(||anyhow!("notification stream ended"))?;last=tokio::time::Instant::now();stale=false;
-                emit(tx,json!({"device":id,"event":"measurement","timestamp_ms":timestamp_ms(),"characteristic":n.uuid,"raw_hex":bike_protocol::hex(&n.value),"value":decode(n.uuid,&n.value)})).await;
-                if custom==Some(n.uuid) && let Some(action)=decoder.as_mut().and_then(|m|m.decode(&n.value)){
-                    tracing::debug!(device=%id, ?action, raw=%bike_protocol::hex(&n.value), "controller action");
-                    emit(tx,json!({"device":id,"event":"controller_action","action":action,"timestamp_ms":timestamp_ms()})).await;
-                    if let Some(sender)=actions{let _=sender.send((Instant::now(),action));}
+            _ = stop.changed() => return Ok(()),
+            n = notifications.next() => {
+                let n = n.ok_or_else(|| anyhow!("notification stream ended"))?;
+                last = tokio::time::Instant::now();
+                stale = false;
+                let mut measurement = event("measurement");
+                measurement["characteristic"] = json!(n.uuid);
+                measurement["raw_hex"] = json!(bike_protocol::hex(&n.value));
+                measurement["value"] = decode(n.uuid, &n.value);
+                emit(tx, measurement);
+                if custom == Some(n.uuid)
+                    && let Some(action) = decoder.as_mut().and_then(|m| m.decode(&n.value))
+                {
+                    tracing::debug!(device = %id, ?action, raw = %bike_protocol::hex(&n.value), "controller action");
+                    let mut pressed = event("controller_action");
+                    pressed["action"] = json!(action);
+                    emit(tx, pressed);
+                    if let Some(sender) = actions {
+                        let _ = sender.send((Instant::now(), action));
+                    }
                 }
             }
-            _=health.tick()=>{
-                if !bounded("connection health",p.is_up()).await?{bail!("device disconnected");}
-                if has_measurements && !stale&&last.elapsed()>Duration::from_secs(5){stale=true;emit(tx,json!({"device":id,"event":"stale","timestamp_ms":timestamp_ms()})).await;}
+            _ = health.tick() => {
+                if !bounded("connection health", p.is_up()).await? {
+                    bail!("device disconnected");
+                }
+                if has_measurements && !stale && last.elapsed() > STALE_AFTER {
+                    stale = true;
+                    emit(tx, event("stale"));
+                }
             }
         }
     }
@@ -420,7 +473,17 @@ async fn monitor_link(
             ready: ready.clone(),
         };
         let mut cancel = stop.clone();
-        let result = tokio::select! {r=session(&p,&tx,mapping.as_ref(),actions.as_ref(),&mut stop,&mut signals)=>r,_=async {while !*cancel.borrow(){if cancel.changed().await.is_err(){break;}}}=>Ok(())};
+        let cancelled = async {
+            while !*cancel.borrow() {
+                if cancel.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        let result = tokio::select! {
+            r = session(&p, &tx, mapping.as_ref(), actions.as_ref(), &mut stop, &mut signals) => r,
+            () = cancelled => Ok(()),
+        };
         if let Some(ready) = &ready {
             let _ = ready.send(false);
         }
@@ -430,16 +493,27 @@ async fn monitor_link(
         }
         if signals
             .connected_at
-            .is_some_and(|at| at.elapsed() > Duration::from_secs(30))
+            .is_some_and(|at| at.elapsed() > STABLE_AFTER)
         {
             retry.stable();
         }
         let error = result.err().unwrap_or_else(|| anyhow!("session ended"));
-        emit(&tx,json!({"device":p.label(),"event":"disconnected","error":format!("{error:#}"),"timestamp_ms":timestamp_ms()})).await;
+        emit(
+            &tx,
+            json!({
+                "device": p.label(),
+                "event": "disconnected",
+                "error": format!("{error:#}"),
+                "timestamp_ms": timestamp_ms(),
+            }),
+        );
         let Some(delay) = retry.next_delay() else {
             return Err(error.context("reconnect budget exhausted"));
         };
-        tokio::select! {_=tokio::time::sleep(delay)=>{},_=stop.changed()=>return Ok(())}
+        tokio::select! {
+            () = tokio::time::sleep(delay) => {}
+            _ = stop.changed() => return Ok(()),
+        }
     }
 }
 

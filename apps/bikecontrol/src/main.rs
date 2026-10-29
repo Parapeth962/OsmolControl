@@ -9,6 +9,8 @@ mod gears;
 mod overlay;
 mod ride;
 mod settings;
+#[cfg(target_os = "linux")]
+mod x11;
 
 use backend::Backend;
 use bike_session::{Phase, Settings, Status};
@@ -75,6 +77,7 @@ fn main() -> eframe::Result<()> {
     }
     let options = eframe::NativeOptions {
         viewport,
+        event_loop_builder: prefer_x11(),
         ..Default::default()
     };
     eframe::run_native(
@@ -108,6 +111,25 @@ fn main() -> eframe::Result<()> {
             }))
         }),
     )
+}
+
+/// Wayland windows cannot ask to stay on top, so the overlay would hide behind MyWhoosh.
+/// MyWhoosh runs on X11 under Proton; with X11 here too the overlay can be stacked above it.
+/// Without a reachable X server, or with DISPLAY unset, it runs natively on Wayland.
+#[cfg(target_os = "linux")]
+fn prefer_x11() -> Option<eframe::EventLoopBuilderHook> {
+    if !x11::active() {
+        return None;
+    }
+    Some(Box::new(|builder| {
+        use winit::platform::x11::EventLoopBuilderExtX11;
+        builder.with_x11();
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prefer_x11() -> Option<eframe::EventLoopBuilderHook> {
+    None
 }
 
 fn apply_theme(ctx: &egui::Context) {
@@ -265,5 +287,22 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.backend.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_text_reports_errors_only_once_stopped() {
+        let mut s = Status::default();
+        assert_eq!(phase_text(&s, false).0, "Not started");
+        s.phase = Phase::Running;
+        assert_eq!(phase_text(&s, true), ("Running", ACCENT));
+        s.error = Some("adapter gone".into());
+        assert_eq!(phase_text(&s, true).0, "Running", "still running");
+        s.phase = Phase::Stopped;
+        assert_eq!(phase_text(&s, false), ("Stopped with an error", WARN));
     }
 }
