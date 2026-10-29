@@ -41,14 +41,14 @@ pub fn run(
 
 fn list() {
     for category in Category::ALL {
-        println!("{}:", category.label());
+        out!("{}:", category.label());
         for t in TEMPLATES.iter().filter(|t| t.category == category) {
             let default = if std::ptr::eq(t, &TEMPLATES[0]) {
                 "  (default)"
             } else {
                 ""
             };
-            println!(
+            out!(
                 "  {:<28} {:<9} {}{default}",
                 t.id,
                 bike_gearing::gear_count(t.chainrings.len() * t.cassette.len()),
@@ -56,28 +56,34 @@ fn list() {
             );
         }
     }
-    println!(
+    out!(
         "\nShow one: bikectl gears <ID>    Custom: bikectl gears --front 50/34 --rear 11-12-13-14-15-17-19-21-24-28"
     );
 }
 
 fn table(title: &str, d: &Drivetrain) {
     let gears = d.gears();
-    println!(
+    out!(
         "{title}: {} gears, wheel {} mm, start in gear {}",
         gears.len(),
         d.wheel_circumference_mm,
         d.default_gear()
     );
-    println!(
+    out!(
         "{:>4}  {:>7}  {:>5}  {:>7}  {:>9}  {:>9}  {:>6}",
-        "gear", "teeth", "ratio", "m/rev", "km/h @60", "km/h @90", "step"
+        "gear",
+        "teeth",
+        "ratio",
+        "m/rev",
+        "km/h @60",
+        "km/h @90",
+        "step"
     );
     for (i, g) in gears.iter().enumerate() {
         let step = i.checked_sub(1).map_or(String::new(), |p| {
             format!("{:+.1}%", step_percent(&gears[p], g))
         });
-        println!(
+        out!(
             "{:>4}  {:>7}  {:>5.2}  {:>7.2}  {:>9.1}  {:>9.1}  {:>6}",
             g.number,
             format!("{}x{}", g.chainring, g.cog),

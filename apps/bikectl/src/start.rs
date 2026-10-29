@@ -50,7 +50,7 @@ pub async fn run(options: Options) -> Result<()> {
                 let s = status.borrow_and_update();
                 let new = usize::try_from(s.log_seq.saturating_sub(printed)).unwrap_or(usize::MAX);
                 for line in s.log.iter().skip(s.log.len().saturating_sub(new)) {
-                    println!("{line}");
+                    out!("{line}");
                 }
                 printed = s.log_seq;
             }

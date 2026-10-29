@@ -18,6 +18,14 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --locked $CORE --all-targets -- -D warnings
       - run: cargo test --locked $CORE
+      - name: Check packaging scripts
+        run: |
+          scripts="packaging/linux/install.sh packaging/linux/test-install.sh packaging/linux/mywhoosh/mywhoosh.sh packaging/macos/OsmolControl.command"
+          for s in $scripts; do bash -n "$s"; done
+          shellcheck -S warning $scripts
+          python3 -I -m py_compile packaging/linux/mywhoosh/ble-bridge.py
+          python3 -I packaging/linux/mywhoosh/ble-bridge.py --help >/dev/null
+          packaging/linux/test-install.sh
       - name: Package Linux binaries
         run: |
           cargo build --locked --release -p bikectl -p bikecontrol

@@ -133,7 +133,7 @@ pub fn panel(ctx: &egui::Context, status: &Status, backend: &Backend, open: &mut
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     if ui
-                        .small_button("✕")
+                        .small_button("🗙")
                         .on_hover_text("Close overlay")
                         .clicked()
                     {
