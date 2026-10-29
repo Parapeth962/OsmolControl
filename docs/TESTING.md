@@ -10,6 +10,7 @@ before passed.
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
+packaging/linux/test-install.sh   # CI also runs bash -n and shellcheck on the scripts
 ```
 
 What they cover, by crate:
@@ -26,10 +27,11 @@ What they cover, by crate:
 | `bike-session` loop | `bridge::run` end to end over channels: telemetry relayed, road acknowledged, **a shift sent before the next tick**, late presses dropped, ERG passed through untouched, stop ends it |
 | `bike-session` session | Heart rate strap searched only when enabled and with a trainer; a trainer that is switched off does not end the ride; settings (old files load, options round trip); status freshness; log bound |
 | `bikectl` | Command-line definition, defaults and refused flag combinations; `start` flags to session settings |
-| `bikecontrol` | Climb difficulty labels, status text, custom gear setup parsing and editing |
+| `bikecontrol` | Climb difficulty labels, status text, custom gear setup parsing and editing; every symbol in the interface exists in egui's fonts (no empty boxes) |
+| Packaging | `install.sh` against a throwaway home with stand-ins for sudo and the package manager: fresh install, rerun to update (game kept, launcher refreshed), second edition, bad option; `shellcheck`; `ble-bridge.py` compiles |
 
 Not covered automatically: real Bluetooth hardware, the egui windows themselves, the X11
-overlay stacking (needs an X server and a window manager), the shell installers.
+overlay stacking (needs an X server and a window manager), installing real system packages.
 
 ## 2. Linux desktop, no devices needed
 
@@ -43,7 +45,7 @@ Build once: `cargo build --locked --release -p bikecontrol -p bikectl`.
    (no X server); both must start.
 3. **Overlay above a fullscreen game (KDE Plasma):** start `osmolcontrol --demo --overlay`, make
    any window fullscreen and focused. The overlay must stay visible on top, follow the mouse
-   when dragged (same distance as the pointer) and close with ✕.
+   when dragged (same distance as the pointer) and close with 🗙.
 4. **Command line:** `bikectl gears`, `bikectl gears <id>`, a custom `--front/--rear`, and wrong
    input (unknown template, duplicate teeth, wheel 900 mm, `decode` with bad hex) must give a
    clear message and exit code 1 or 2, never a panic.
@@ -51,8 +53,8 @@ Build once: `cargo build --locked --release -p bikecontrol -p bikectl`.
 6. **Trainer switched off:** `bikectl start --trainer-bridge --gears claris-r2000-50-34-11-32
    --no-heart-rate --seconds 45` must keep logging "Cannot connect ... Still looking." and stop
    after 45 s, not end with an error.
-7. **Packaging:** `bash -n` on every `.sh`, `mywhoosh.sh doctor` on an installed MyWhoosh, and
-   running `install.sh` again must say it updates and keep the game.
+7. **Packaging:** `mywhoosh.sh doctor` on an installed MyWhoosh must report every line ok.
+8. **Command line output into a pipe:** `bikectl gears | head -1` must exit 0 without a panic.
 
 ## 3. Ride with hardware
 

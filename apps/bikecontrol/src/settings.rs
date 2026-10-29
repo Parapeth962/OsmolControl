@@ -63,19 +63,22 @@ pub fn show(
                 "How hard MyWhoosh's hills feel with virtual shifting. 100 % rides the road grade \
                  shown in MyWhoosh; MyWhoosh's own halving of the grade is undone.",
             );
+            // The label sits beside the slider; the presets get their own row below it, as a
+            // grid centres a label against everything in its row.
+            ui.horizontal(|ui| {
+                ui.spacing_mut().slider_width = 240.0;
+                ui.add(
+                    egui::Slider::new(&mut settings.difficulty_percent, 25.0..=150.0)
+                        .smart_aim(false)
+                        .fixed_decimals(0)
+                        .suffix(" %"),
+                );
+                ui.label(RichText::new(difficulty_label(settings.difficulty_percent)).color(MUTED));
+            });
+            ui.end_row();
+
+            ui.label("");
             ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().slider_width = 240.0;
-                    ui.add(
-                        egui::Slider::new(&mut settings.difficulty_percent, 25.0..=150.0)
-                            .smart_aim(false)
-                            .fixed_decimals(0)
-                            .suffix(" %"),
-                    );
-                    ui.label(
-                        RichText::new(difficulty_label(settings.difficulty_percent)).color(MUTED),
-                    );
-                });
                 for row in DIFFICULTY_PRESETS.chunks(3) {
                     ui.horizontal(|ui| {
                         for &(percent, label) in row {

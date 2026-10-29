@@ -11,8 +11,28 @@ use tokio::{
     sync::{broadcast, mpsc, watch},
     task::JoinSet,
 };
+
+/// `println!` that ends the program quietly once the reader is gone (`bikectl gears | head`)
+/// instead of panicking with "Broken pipe".
+macro_rules! out {
+    ($($arg:tt)*) => {
+        $crate::print_line(format_args!($($arg)*))
+    };
+}
+
 mod gears;
 mod start;
+
+fn print_line(line: std::fmt::Arguments) {
+    use std::io::Write;
+    if let Err(e) = writeln!(std::io::stdout().lock(), "{line}") {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+        eprintln!("cannot write output: {e}");
+        std::process::exit(1);
+    }
+}
 
 /// Scan length before picking a device given by ID or name.
 const FIND_SECONDS: u64 = 3;
@@ -162,7 +182,7 @@ fn output() -> (mpsc::Sender<serde_json::Value>, tokio::task::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel(128);
     let job = tokio::spawn(async move {
         while let Some(v) = rx.recv().await {
-            println!("{v}");
+            out!("{v}");
         }
     });
     (tx, job)
@@ -229,13 +249,13 @@ async fn main() -> Result<()> {
             })
             .await?
         }
-        Command::Adapters => println!(
+        Command::Adapters => out!(
             "{}",
             serde_json::to_string_pretty(&bike_ble::adapters().await?)?
         ),
         Command::Scan { seconds } => {
             let a = bike_ble::adapter(cli.adapter).await?;
-            println!(
+            out!(
                 "{}",
                 serde_json::to_string_pretty(&bike_ble::scan(&a, seconds).await?)?
             );
@@ -243,7 +263,7 @@ async fn main() -> Result<()> {
         Command::Inspect { device } => {
             let a = bike_ble::adapter(cli.adapter).await?;
             let p = bike_ble::find(&a, &device, FIND_SECONDS).await?;
-            println!(
+            out!(
                 "{}",
                 serde_json::to_string_pretty(&bike_ble::inspect(&p).await?)?
             );
@@ -287,7 +307,7 @@ async fn main() -> Result<()> {
         } => {
             let id = u16::from_str_radix(characteristic.trim_start_matches("0x"), 16)
                 .context("characteristic must be four hex digits")?;
-            println!(
+            out!(
                 "{}",
                 serde_json::to_string_pretty(&bike_protocol::characteristic(
                     id,

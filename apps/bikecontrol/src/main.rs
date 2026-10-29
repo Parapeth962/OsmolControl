@@ -305,4 +305,30 @@ mod tests {
         s.phase = Phase::Stopped;
         assert_eq!(phase_text(&s, false), ("Stopped with an error", WARN));
     }
+
+    /// A symbol missing from egui's built-in fonts is drawn as an empty box.
+    #[test]
+    fn every_symbol_in_the_interface_has_a_glyph() {
+        const SOURCES: [&str; 8] = [
+            include_str!("main.rs"),
+            include_str!("overlay.rs"),
+            include_str!("ride.rs"),
+            include_str!("gears.rs"),
+            include_str!("settings.rs"),
+            include_str!("controllers.rs"),
+            include_str!("../../../crates/bike-session/src/lib.rs"),
+            include_str!("../../../crates/bike-gearing/src/templates.rs"),
+        ];
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let font = egui::FontId::proportional(14.0);
+        let missing: Vec<char> = SOURCES
+            .iter()
+            .flat_map(|s| s.lines())
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .flat_map(str::chars)
+            .filter(|c| !c.is_ascii() && !ctx.fonts(|f| f.has_glyph(&font, *c)))
+            .collect();
+        assert!(missing.is_empty(), "no glyph for {missing:?}");
+    }
 }
