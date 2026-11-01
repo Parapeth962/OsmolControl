@@ -33,7 +33,8 @@ jobs:
           cp target/release/osmolcontrol target/release/bikectl apps/bikecontrol/assets/osmolcontrol.svg dist/OsmolControl/
           # The layout install.sh expects: the script, the programs and the MyWhoosh launcher.
           cp packaging/linux/install.sh dist/OsmolControl/
-          cp -r packaging/linux/mywhoosh dist/OsmolControl/
+          mkdir dist/OsmolControl/mywhoosh
+          cp packaging/linux/mywhoosh/{mywhoosh.sh,ble-bridge.py,README.md} dist/OsmolControl/mywhoosh/
           tar -czf dist/OsmolControl-Linux-x86_64.tar.gz -C dist OsmolControl
           # Separate files for updating from inside the app (bike-update).
           mkdir dist/update
