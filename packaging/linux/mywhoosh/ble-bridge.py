@@ -66,6 +66,7 @@ class DirCon:
         self.lock = threading.Lock()
         self.seq = 0
         self.pending = {}
+        self.closed = False
         threading.Thread(target=self.read_loop, daemon=True).start()
 
     def close(self):
@@ -107,6 +108,7 @@ class DirCon:
                         waiter["event"].set()
         except OSError:
             pass
+        self.closed = True
         self.on_closed()
 
 
@@ -180,8 +182,9 @@ class Session:
     def on_value(self, addr, char, value):
         self.send({"ev": "value", "addr": addr, "char": char, "value": value.hex()})
 
-    def on_closed(self, addr):
-        if self.links.pop(addr, None) is not None:
+    def on_closed(self, addr, link):
+        # Only the link still in use: a replaced one may report its end after a reconnect.
+        if self.links.get(addr) is link and self.links.pop(addr, None) is link:
             log(f"DirCon connection of {addr} closed")
             self.send({"ev": "connection", "addr": addr, "connected": False})
 
@@ -206,13 +209,16 @@ class Session:
             raise BridgeError("unknown device")
         name = self.name if addr == TRAINER else f"{self.name} HR"
         if op == "connect":
-            if addr not in self.links:
+            # A link that ended before it was stored here is replaced too.
+            if addr not in self.links or self.links[addr].closed:
+                link = None
                 try:
-                    self.links[addr] = DirCon(*self.dircon_address,
-                                              lambda c, v: self.on_value(addr, c, v),
-                                              lambda: self.on_closed(addr))
+                    link = DirCon(*self.dircon_address,
+                                  lambda c, v: self.on_value(addr, c, v),
+                                  lambda: self.on_closed(addr, link))
                 except OSError as e:
                     raise BridgeError(f"no DirCon trainer at {self.dircon_address}: {e}")
+                self.links[addr] = link
                 log(f"{name}: connected to the DirCon server")
             return {"name": name}
         if op == "disconnect":

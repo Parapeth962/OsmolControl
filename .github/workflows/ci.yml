@@ -25,6 +25,7 @@ jobs:
           shellcheck -S warning $scripts
           python3 -I -m py_compile packaging/linux/mywhoosh/ble-bridge.py
           python3 -I packaging/linux/mywhoosh/ble-bridge.py --help >/dev/null
+          python3 -I -m unittest discover -s packaging/linux/mywhoosh
           packaging/linux/test-install.sh
       - name: Package Linux binaries
         run: |

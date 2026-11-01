@@ -722,16 +722,11 @@ async fn session(
             advertise: true,
         };
         let (ready_tx, readiness) = watch::channel(false);
-        let mut controller_state = status.subscribe();
-        jobs.spawn(async move {
-            loop {
-                let connected = controller_state.borrow_and_update().controller.connected;
-                let _ = ready_tx.send(connected);
-                if controller_state.changed().await.is_err() {
-                    return Ok(());
-                }
-            }
-        });
+        jobs.spawn(relay_readiness(
+            status.subscribe(),
+            ready_tx,
+            stopped.clone(),
+        ));
         let (active, links) = watch::channel(0);
         watch_links(&mut jobs, status, links, |s, n| s.app_controller_links = n);
         let (s, r, a) = (stop.clone(), stopped.clone(), actions.clone());
@@ -839,6 +834,25 @@ async fn session(
     finish(jobs, stop).await
 }
 
+/// Tell the controller server whether the controller is connected, until the ride stops. The
+/// status outlives the ride (the front end keeps it), so its changes alone never end this.
+async fn relay_readiness(
+    mut state: watch::Receiver<Status>,
+    ready: watch::Sender<bool>,
+    mut stop: watch::Receiver<bool>,
+) -> Result<()> {
+    loop {
+        let connected = state.borrow_and_update().controller.connected;
+        if ready.send(connected).is_err() || *stop.borrow() {
+            return Ok(());
+        }
+        tokio::select! {
+            changed = state.changed() => if changed.is_err() { return Ok(()) },
+            _ = stop.changed() => return Ok(()),
+        }
+    }
+}
+
 /// Optional: one scan, and the ride goes on without a strap. Only when enabled in the settings
 /// and with a trainer, which carries the readings to the app; otherwise `search` never runs.
 async fn find_strap<P, Fut>(
@@ -939,7 +953,11 @@ async fn finish(mut jobs: JoinSet<Result<()>>, stop: watch::Sender<bool>) -> Res
                 errors.push(format!("{e:#}"));
                 let _ = stop.send(true);
             }
-            Err(e) => errors.push(e.to_string()),
+            // A panicked job ends the ride like a failed one.
+            Err(e) => {
+                errors.push(e.to_string());
+                let _ = stop.send(true);
+            }
         }
     }
     if !errors.is_empty() {
@@ -978,6 +996,26 @@ mod tests {
         assert!(save_controller_in(&path, profile("D", "01")).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap_or_default(), "[{");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The session waits for all its jobs, so each must end once the ride is stopped even
+    /// though the status (owned by the front end) lives on.
+    #[tokio::test]
+    async fn readiness_relay_follows_the_controller_and_ends_on_stop() {
+        let (status, state) = watch::channel(Status::default());
+        let (ready, mut readiness) = watch::channel(false);
+        let (stop, stopped) = watch::channel(false);
+        let job = tokio::spawn(relay_readiness(state, ready, stopped));
+        status.send_modify(|s| s.controller.connected = true);
+        let followed =
+            tokio::time::timeout(Duration::from_secs(2), readiness.wait_for(|r| *r)).await;
+        assert!(followed.is_ok_and(|r| r.is_ok()));
+        drop(readiness);
+        let _ = stop.send(true);
+        status.send_modify(|s| s.controller.connected = false);
+        let ended = tokio::time::timeout(Duration::from_secs(2), job).await;
+        assert!(ended.is_ok(), "still running after stop");
+        drop(status);
     }
 
     #[test]
