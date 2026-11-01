@@ -499,7 +499,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bike-ble"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bike-core",
@@ -514,7 +514,7 @@ dependencies = [
 
 [[package]]
 name = "bike-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "bike-protocol",
  "serde",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "bike-dircon"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "mdns-sd",
@@ -535,7 +535,7 @@ dependencies = [
 
 [[package]]
 name = "bike-gearing"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -543,7 +543,7 @@ dependencies = [
 
 [[package]]
 name = "bike-mywhoosh"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bike-core",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "bike-protocol"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "bike-session"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bike-ble",
@@ -583,7 +583,7 @@ dependencies = [
 
 [[package]]
 name = "bike-update"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "flate2",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "bikecontrol"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bike-ble",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "bikectl"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bike-ble",

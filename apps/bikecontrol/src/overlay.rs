@@ -98,6 +98,8 @@ pub fn panel(ctx: &egui::Context, status: &Status, backend: &Backend, open: &mut
                 .inner_margin(10),
         )
         .show(ctx, |ui| {
+            // Selectable text would take the drag; grabbing any text moves the overlay instead.
+            ui.style_mut().interaction.selectable_labels = false;
             let drag = ui.interact(
                 ui.max_rect(),
                 egui::Id::new("overlay-drag"),
@@ -171,4 +173,52 @@ pub fn panel(ctx: &egui::Context, status: &Status, backend: &Backend, open: &mut
                 ui.label(RichText::new(format!("{grade} %")).size(22.0).color(MUTED));
             });
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Presses at `at`, moves the pointer away while held and returns what egui drags.
+    fn drag_from(at: egui::Pos2) -> Option<egui::Id> {
+        let ctx = egui::Context::default();
+        let Ok(backend) = Backend::new(ctx.clone()) else {
+            panic!("no backend");
+        };
+        let status = Status::default();
+        let frame = |events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, SIZE.into())),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| panel(ctx, &status, &backend, &mut true));
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(at)]);
+        frame(vec![button(at, true)]);
+        let mut dragged = None;
+        for step in 1..=5 {
+            frame(vec![egui::Event::PointerMoved(
+                at + egui::vec2(10.0, 4.0) * step as f32,
+            )]);
+            dragged = dragged.or(ctx.dragged_id());
+        }
+        frame(vec![button(at + egui::vec2(50.0, 20.0), false)]);
+        dragged
+    }
+
+    #[test]
+    fn grabbing_any_text_moves_the_overlay() {
+        let overlay = Some(egui::Id::new("overlay-drag"));
+        // The title, the power reading and an empty spot.
+        for at in [(40.0, 20.0), (30.0, 55.0), (150.0, 120.0)] {
+            assert_eq!(drag_from(at.into()), overlay, "grabbed at {at:?}");
+        }
+    }
 }

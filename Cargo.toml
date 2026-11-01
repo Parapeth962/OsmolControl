@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/bike-protocol", "crates/bike-gearing", "crates/bike-core", "crates/bike-ble", "crates/bike-mywhoosh", "crates/bike-dircon", "crates/bike-session", "crates/bike-update", "apps/bikectl", "apps/bikecontrol"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 rust-version = "1.99"
 
