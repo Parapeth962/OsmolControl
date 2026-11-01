@@ -138,6 +138,15 @@ enum Command {
     },
     /// Decode captured standard BLE bytes offline, e.g. decode 2ad2 4400c409b400fa00.
     Decode { characteristic: String, hex: String },
+    /// Update to the latest release: downloads only the programs, not the whole package.
+    Update {
+        /// Only report whether an update is available.
+        #[arg(long)]
+        check: bool,
+        /// Reinstall the latest release even when this one is not older.
+        #[arg(long, conflicts_with = "check")]
+        force: bool,
+    },
 }
 fn mass(text: &str) -> Result<f64, String> {
     match text.parse::<f64>() {
@@ -203,6 +212,32 @@ async fn finish(mut jobs: JoinSet<Result<()>>, stop: watch::Sender<bool>) -> Res
     if !errors.is_empty() {
         bail!("{}", errors.join("; "));
     }
+    Ok(())
+}
+fn update(check: bool, force: bool) -> Result<()> {
+    let targets = bike_update::targets()?;
+    bike_update::remove_leftovers(&targets);
+    let release = bike_update::latest().context("cannot check for updates")?;
+    let current = bike_update::CURRENT;
+    if !release.is_newer() && !force {
+        out!("{} {current} is the latest version.", bike_core::APP_NAME);
+        return Ok(());
+    }
+    if check {
+        out!(
+            "Version {} is available (this is {current}); run: bikectl update",
+            release.version
+        );
+        return Ok(());
+    }
+    for target in &targets {
+        out!("Updating {}", target.path.display());
+    }
+    bike_update::install(&release, &targets)?;
+    out!(
+        "Updated to {}. Restart OsmolControl if it is running.",
+        release.version
+    );
     Ok(())
 }
 #[tokio::main]
@@ -301,6 +336,9 @@ async fn main() -> Result<()> {
             rear.as_deref(),
             wheel_mm,
         )?,
+        Command::Update { check, force } => {
+            tokio::task::spawn_blocking(move || update(check, force)).await??
+        }
         Command::Decode {
             characteristic,
             hex,

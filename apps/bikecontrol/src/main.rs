@@ -9,6 +9,7 @@ mod gears;
 mod overlay;
 mod ride;
 mod settings;
+mod update;
 #[cfg(target_os = "linux")]
 mod x11;
 
@@ -50,6 +51,8 @@ fn main() -> eframe::Result<()> {
         .map(std::path::PathBuf::from);
     // Secondary windows cannot be captured, so the overlay is shot in the main window.
     let overlay_preview = force_overlay && screenshot.is_some();
+    // Demos and screenshots stay offline and look the same every time.
+    let check_updates = !demo && screenshot.is_none();
     let tab = match args
         .iter()
         .position(|a| a == "--tab")
@@ -108,6 +111,7 @@ fn main() -> eframe::Result<()> {
                 demo,
                 capture: capture::Capture::new(screenshot),
                 overlay_preview,
+                updater: update::Updater::new(cc.egui_ctx.clone(), check_updates),
             }))
         }),
     )
@@ -162,6 +166,7 @@ struct App {
     demo: bool,
     capture: capture::Capture,
     overlay_preview: bool,
+    updater: update::Updater,
 }
 
 pub fn phase_text(status: &Status, running: bool) -> (&'static str, Color32) {
@@ -245,6 +250,7 @@ impl eframe::App for App {
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.add_space(4.0);
             self.top_bar(ui, &status);
+            self.updater.banner(ui, running);
             ui.add_space(2.0);
         });
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -257,12 +263,16 @@ impl eframe::App for App {
                         self.controllers
                             .show(ui, &mut self.settings, &self.backend, running)
                     }
-                    Tab::Settings => settings::show(
-                        ui,
-                        &mut self.settings,
-                        running,
-                        status.address.filter(|_| self.demo),
-                    ),
+                    Tab::Settings => {
+                        settings::show(
+                            ui,
+                            &mut self.settings,
+                            running,
+                            status.address.filter(|_| self.demo),
+                        );
+                        ui.separator();
+                        self.updater.settings(ui, running);
+                    }
                     Tab::Log => {
                         for line in &status.log {
                             ui.label(RichText::new(line).monospace());
@@ -287,6 +297,7 @@ impl eframe::App for App {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.backend.shutdown();
+        self.updater.relaunch();
     }
 }
 
@@ -309,13 +320,14 @@ mod tests {
     /// A symbol missing from egui's built-in fonts is drawn as an empty box.
     #[test]
     fn every_symbol_in_the_interface_has_a_glyph() {
-        const SOURCES: [&str; 8] = [
+        const SOURCES: [&str; 9] = [
             include_str!("main.rs"),
             include_str!("overlay.rs"),
             include_str!("ride.rs"),
             include_str!("gears.rs"),
             include_str!("settings.rs"),
             include_str!("controllers.rs"),
+            include_str!("update.rs"),
             include_str!("../../../crates/bike-session/src/lib.rs"),
             include_str!("../../../crates/bike-gearing/src/templates.rs"),
         ];

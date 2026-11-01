@@ -36,7 +36,8 @@ or a 50-speed virtual ladder.
 | macOS | Unpack `OsmolControl-macOS.tar.gz`, run `osmolcontrol` |
 | Linux | `packaging/linux/install.sh` (apt, dnf or pacman) |
 
-Details, screenshots and troubleshooting: **[docs/MANUAL.md](docs/MANUAL.md)**.
+Updates install from inside the app (or with `bikectl update`) and download only the new
+programs. Details, screenshots and troubleshooting: **[docs/MANUAL.md](docs/MANUAL.md)**.
 
 ## Hardware support
 
@@ -68,6 +69,7 @@ Linux needs `libdbus-1-dev`/`dbus-devel` and `pkg-config`. The workspace:
 | `bike-dircon` | DirCon (Wahoo Direct Connect) virtual trainer server |
 | `bike-mywhoosh` | OpenBikeControl controller server |
 | `bike-session` | the riding session shared by the GUI and the CLI |
+| `bike-update` | updates from GitHub releases, checksum-verified |
 | `apps/bikecontrol` | desktop app (`osmolcontrol`, egui) |
 | `apps/bikectl` | command line tool |
 

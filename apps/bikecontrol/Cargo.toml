@@ -21,6 +21,7 @@ bike-gearing.workspace = true
 bike-protocol.workspace = true
 bike-ble.workspace = true
 bike-session.workspace = true
+bike-update.workspace = true
 
 # Same winit and x11rb as eframe; X11 lets the overlay stay above fullscreen games.
 [target.'cfg(target_os = "linux")'.dependencies]

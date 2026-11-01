@@ -77,6 +77,20 @@ The server accepts up to four clients, honors optional app capabilities, drops s
 
 Allow multicast DNS UDP 5353 and the chosen TCP port on the trusted LAN. On a Windows MyWhoosh host, check Bonjour if discovery fails. `--no-mdns` is for direct-address diagnostics; do not assume MyWhoosh offers manual IP entry. The app does not modify your firewall or system services. See [network contract](protocol/mywhoosh.md).
 
+## Updating
+
+```sh
+bikectl update --check   # only report whether a newer release is out
+bikectl update           # download and install it
+bikectl update --force   # reinstall the latest release
+```
+
+It replaces the programs in its own folder (`osmolcontrol`/`OsmolControl.exe` and `bikectl`)
+and, on Linux, the MyWhoosh launcher scripts installed by `install.sh`. Only the compressed
+programs are downloaded from the latest GitHub release, and each must match the release's
+`SHA256SUMS` before any file is replaced. A running OsmolControl uses the new version from its
+next start.
+
 ## Offline decoding and diagnostics
 
 ```sh

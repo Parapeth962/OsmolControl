@@ -1,9 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/bike-protocol", "crates/bike-gearing", "crates/bike-core", "crates/bike-ble", "crates/bike-mywhoosh", "crates/bike-dircon", "crates/bike-session", "apps/bikectl", "apps/bikecontrol"]
+members = ["crates/bike-protocol", "crates/bike-gearing", "crates/bike-core", "crates/bike-ble", "crates/bike-mywhoosh", "crates/bike-dircon", "crates/bike-session", "crates/bike-update", "apps/bikectl", "apps/bikecontrol"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.99"
 
@@ -27,6 +27,7 @@ bike-ble = { path = "crates/bike-ble" }
 bike-mywhoosh = { path = "crates/bike-mywhoosh" }
 bike-dircon = { path = "crates/bike-dircon" }
 bike-session = { path = "crates/bike-session" }
+bike-update = { path = "crates/bike-update" }
 egui = "0.31"
 eframe = { version = "0.31", features = ["glow", "persistence"] }
 

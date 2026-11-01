@@ -1,0 +1,17 @@
+[package]
+name = "bike-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+flate2 = "1"
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.11"
+# HTTPS with bundled root certificates, the same on every platform.
+ureq = { version = "3", default-features = false, features = ["rustls"] }

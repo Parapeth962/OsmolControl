@@ -71,8 +71,18 @@ builds OsmolControl, asks whether you want MyWhoosh or MyWhoosh HD, and installs
 Proton on the same PC, with desktop and menu shortcuts and automatic game updates. Linux users who only want MyWhoosh can use the standalone installer at
 [mywhoosh-linux-installer](https://github.com/Parapeth962/mywhoosh-linux-installer).
 
-To update OsmolControl later, run the same command again. It finds the installed MyWhoosh,
-rebuilds OsmolControl and refreshes the launcher; the game and your login stay as they are.
+### Updating
+
+OsmolControl looks for a new version each time it starts. When one is out, a line under the
+tabs says **Version … is available**: press **Update**, then **Restart now**. Only the new
+programs are downloaded (a few MB, checked against the release's checksums before anything is
+replaced); your settings, gears and controllers stay. On Linux the MyWhoosh launcher scripts are
+refreshed too, and the game and your login stay as they are. Updating is not possible during a
+ride. **Settings → Check for updates** looks again at any time; from a terminal,
+`bikectl update` does the same.
+
+On Linux, running `install.sh` again also still works: it finds the installed MyWhoosh and
+replaces OsmolControl and the launcher.
 
 ## 3. First ride, step by step
 
@@ -163,6 +173,7 @@ other desktops use *Keep above others* if it hides behind a fullscreen game.
   when you ride without one; the ride then starts a few seconds sooner.
 - **Network address:** leave on *Automatic* unless your computer has several networks.
 - **Bluetooth adapter:** only change with several Bluetooth adapters.
+- **Version:** the installed version and **Check for updates**; see [Updating](#updating).
 
 ### Log
 
