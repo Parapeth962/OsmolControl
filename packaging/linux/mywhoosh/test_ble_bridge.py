@@ -36,6 +36,8 @@ class FakeDirCon:
         self.address = self.server.getsockname()
         self.writes = []
         self.clients = []
+        # Released once per accepted connection, which lags behind the client's connect.
+        self.accepted = threading.Semaphore(0)
         threading.Thread(target=self.accept, daemon=True).start()
 
     def accept(self):
@@ -45,6 +47,7 @@ class FakeDirCon:
             except OSError:
                 return
             self.clients.append(conn)
+            self.accepted.release()
             threading.Thread(target=self.serve, args=(conn,), daemon=True).start()
 
     def serve(self, conn):
@@ -172,6 +175,7 @@ class BridgeTest(unittest.TestCase):
 
     def test_server_closing_reports_the_disconnect(self):
         self.call("connect", addr=bridge.TRAINER)
+        self.assertTrue(self.dircon.accepted.acquire(timeout=5))
         for conn in self.dircon.clients:
             conn.shutdown(socket.SHUT_RDWR)
         self.assertEqual(self.receive(), {"ev": "connection", "addr": bridge.TRAINER,
