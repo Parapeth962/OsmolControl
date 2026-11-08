@@ -67,6 +67,39 @@ impl Mode {
     }
 }
 
+/// How the virtual gears drive the trainer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ShiftFeel {
+    /// The trainer simulates the road, made steeper or flatter for each gear relative to the
+    /// rider's real gear on it. It reacts to its own flywheel at once, as on a real bike.
+    #[default]
+    Road,
+    /// The trainer holds a power target computed from the gear and the cadence (ERG-like).
+    Power,
+}
+
+impl ShiftFeel {
+    pub const ALL: [Self; 2] = [Self::Road, Self::Power];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Road => "Road",
+            Self::Power => "Power target",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Road => {
+                "The trainer simulates the road for each gear: resistance follows your speed the moment you shift, like a real bike. Learns your real gear on the trainer in the first seconds of steady pedalling."
+            }
+            Self::Power => {
+                "The trainer holds the power each gear needs at your cadence, like ERG. Shifts feel softer. For trainers that cannot simulate a road."
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GearSource {
     Template(String),
@@ -112,6 +145,11 @@ pub struct Settings {
     /// Climb difficulty for virtual shifting, in percent of the real road grade (100 = as on
     /// the map; MyWhoosh's own trainer difficulty is neutralized).
     pub difficulty_percent: f64,
+    /// How the gears drive the trainer.
+    pub shift_feel: ShiftFeel,
+    /// The real gear on the trainer learned on the last ride, as metres the trainer's wheel
+    /// turns per crank revolution: independent of the selected gear setup's wheel size.
+    pub real_chain_m: Option<f64>,
     pub adapter: usize,
     /// LAN address to serve on; detected when `None`.
     pub bind: Option<Ipv4Addr>,
@@ -133,6 +171,8 @@ impl Default for Settings {
             gears: GearSource::Template(bike_gearing::TEMPLATES[0].id.into()),
             mass_kg: 84.0,
             difficulty_percent: 100.0,
+            shift_feel: ShiftFeel::default(),
+            real_chain_m: None,
             adapter: 0,
             bind: None,
             my_setups: Vec::new(),
@@ -256,6 +296,14 @@ pub struct Status {
     pub control: Control,
     pub grade_percent: Option<f64>,
     pub target_w: Option<i16>,
+    /// The rider's real gear on the trainer (chainring/cog), once known.
+    pub real_chain: Option<f64>,
+    /// The same as metres per crank revolution, for remembering it (see [`Settings`]).
+    pub real_chain_m: Option<f64>,
+    /// The trainer simulates the road for the virtual gear (no power targets).
+    pub road_feel: bool,
+    /// How the gears drive the trainer on this ride (after any fallback).
+    pub shift_feel: ShiftFeel,
     pub last_action: Option<(Action, Instant)>,
     pub log: VecDeque<String>,
     /// Total log lines ever written, so readers can print only new ones.
@@ -767,7 +815,40 @@ async fn session(
             stopped.clone(),
             connected,
         ));
-        let router = bridge::Router::new(snapshot.limits, shifter);
+        let feel = match settings.shift_feel {
+            ShiftFeel::Road if shifting && !bridge::simulates_road(&snapshot) => {
+                log(
+                    status,
+                    "The trainer does not simulate a road; gears use power targets.",
+                );
+                ShiftFeel::Power
+            }
+            feel => feel,
+        };
+        let wheel_m = shifter
+            .as_ref()
+            .map(|s| f64::from(s.drivetrain().wheel_circumference_mm) / 1000.0);
+        let known = settings
+            .real_chain_m
+            .zip(wheel_m)
+            .map(|(m, wheel)| m / wheel)
+            .filter(|_| feel == ShiftFeel::Road);
+        if let Some(ratio) = known {
+            log(
+                status,
+                format!(
+                    "Real gear on the trainer from your last ride: ratio {ratio:.2}; checked as you pedal."
+                ),
+            );
+        }
+        status.send_modify(|s| {
+            s.shift_feel = feel;
+            s.real_chain = known;
+            s.real_chain_m = known.and(settings.real_chain_m);
+        });
+        let router = bridge::Router::new(snapshot.limits, shifter)
+            .with_feel(feel)
+            .with_real_chain(known);
         let channels = bridge::Channels {
             app_writes,
             from_trainer: from_trainer_rx,
@@ -1158,6 +1239,19 @@ mod tests {
         assert_eq!(find_strap(true, true, &status, failed).await, None);
         let empty = || async { Ok::<Option<(&str, String)>, anyhow::Error>(None) };
         assert_eq!(find_strap(true, true, &status, empty).await, None);
+    }
+
+    #[test]
+    fn shift_feel_and_remembered_chain_persist() {
+        let old: Settings = serde_json::from_str(r#"{"mass_kg": 70.0}"#).unwrap_or_default();
+        assert_eq!((old.shift_feel, old.real_chain_m), (ShiftFeel::Road, None));
+        let s = Settings {
+            shift_feel: ShiftFeel::Power,
+            real_chain_m: Some(5.2),
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&s).unwrap_or_default();
+        assert_eq!(serde_json::from_str::<Settings>(&json).ok(), Some(s));
     }
 
     #[test]

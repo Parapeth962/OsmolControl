@@ -19,11 +19,12 @@ What they cover, by crate:
 | --- | --- |
 | `bike-protocol` | FTMS, Cycling Power, CSC and heart rate decoding from captured frames; OpenBikeControl framing; FTMS safety filter (only allowed commands, targets clamped, grade limited); trainer write queue |
 | `bike-core` | Controller profiles (built-in and user), button decoding of every supported controller, learning a new controller, reconnect budget |
-| `bike-gearing` | Gear lists and ordering, calculator figures, validation, every template; road physics, shifting, slew limit, grade scale |
+| `bike-gearing` | Gear lists and ordering, calculator figures, validation, every template; road physics, shifting, slew limit, grade scale; the road sent to the trainer costs what the virtual gear costs (every gear, climbs, descents, wind); real chain learned only from steady pedalling |
 | `bike-ble` | Controller and strap monitoring over a mock link: subscriptions, readiness, stale data, reconnects, timeouts, cancellation; trainer control replay |
 | `bike-dircon` | DirCon codec, GATT discovery/read/write/notify, a real loopback TCP session, malformed peers |
 | `bike-mywhoosh` | OpenBikeControl over real TCP: fragmentation, capabilities, stale and not-ready presses dropped, unknown messages |
-| `bike-session` router | Simulation consumed and turned into power targets; ERG and reset pause the gears; targets within the trainer's limits and not repeated; own trainer replies hidden from the app; every Claris shift reaches the trainer |
+| `bike-session` router | Simulation consumed and turned into power targets; ERG and reset pause the gears; targets within the trainer's limits and not repeated; own trainer replies hidden from the app; every Claris shift reaches the trainer; one odd cadence reading ignored; road feel sends a steeper road for harder gears, falls back to power targets when the trainer refuses or lacks simulation; load changes too small to feel not resent, shifts always sent |
+| `bike-session` ride (`tests/ride.rs`) | Closed loop against a simulated trainer (flywheel inertia, 4 Hz whole-rpm noisy telemetry, paced writes) and rider: real chain learned in about 6 s, speed at a set power the same in every gear (as on a real bike), shifts felt within one write, steady riding quiet, climbs and descents, a chain on 34x28, a remembered chain corrected, power feel. `replay_capture` (ignored) replays a local capture: `OSMOL_CAPTURE=ride.jsonl cargo test -p bike-session --test ride -- --ignored --nocapture` |
 | `bike-session` loop | `bridge::run` end to end over channels: telemetry relayed, road acknowledged, **a shift sent before the next tick**, late presses dropped, ERG passed through untouched, stop ends it |
 | `bike-session` session | Heart rate strap searched only when enabled and with a trainer; a trainer that is switched off does not end the ride; settings (old files load, options round trip); status freshness; log bound |
 | `bikectl` | Command-line definition, defaults and refused flag combinations; `start` flags to session settings |
@@ -75,6 +76,16 @@ Trainer, controller, optional heart rate strap, MyWhoosh. Tick each line.
 - [ ] At either end of the range, more presses do nothing.
 - [ ] On a climb the resistance rises; Climb difficulty 50 % feels clearly easier than 100 %.
 - [ ] During an ERG workout the power follows MyWhoosh; gears change nothing until it ends.
+
+**Road feel (Settings > Shift feel: Road, chain in a middle gear)**
+- [ ] After about 6 s of steady pedalling the Log says *Real gear on the trainer: ratio ...* and
+      the Ride tab says *Road feel*; the ratio matches the chain (e.g. 50x21 = 2.38).
+- [ ] Each shift is felt at once as more or less pedal pressure, and the cadence then settles
+      lower or higher; at a steady effort the speed in MyWhoosh hardly changes between gears.
+- [ ] Riding steadily on a flat road, the load does not pulse or change by itself.
+- [ ] Next ride: road feel from the first stroke (*... from your last ride*).
+- [ ] Chain moved on the bike: *Real gear on the trainer changed* after a few seconds.
+- [ ] Chain on the smallest cog: a hint to move it to a middle gear.
 
 **Heart rate**
 - [ ] *Use a heart rate strap* on: the strap is found, bpm on the Ride tab and in MyWhoosh.

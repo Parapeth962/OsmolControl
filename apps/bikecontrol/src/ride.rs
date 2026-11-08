@@ -4,6 +4,24 @@ use crate::{ACCENT, MUTED, WARN};
 use bike_session::{Control, Mode, Status};
 use eframe::egui::{self, Color32, RichText};
 
+/// How the gears drive the trainer right now, while riding the road.
+fn feel_line(status: &Status) -> Option<String> {
+    if status.control != Control::Simulation {
+        return None;
+    }
+    Some(match (status.road_feel, status.real_chain) {
+        (true, Some(ratio)) => {
+            format!(
+                "Road feel: the trainer simulates each gear (real gear on the trainer {ratio:.2})."
+            )
+        }
+        (false, None) if status.shift_feel == bike_session::ShiftFeel::Road => {
+            "Learning your real gear on the trainer: pedal steadily for a few seconds.".into()
+        }
+        _ => "Power targets: the trainer holds each gear's watts.".into(),
+    })
+}
+
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::group(ui.style())
         .corner_radius(8)
@@ -120,6 +138,8 @@ pub fn show(ui: &mut egui::Ui, status: &Status, backend: &Backend, running: bool
                     RichText::new("ERG workout: MyWhoosh sets the power, gears are paused.")
                         .color(WARN),
                 );
+            } else if let Some(line) = feel_line(status) {
+                ui.label(RichText::new(line).color(MUTED));
             }
             shift_buttons(ui, backend, running);
         }
@@ -180,11 +200,14 @@ pub fn show(ui: &mut egui::Ui, status: &Status, backend: &Backend, running: bool
                     status.grade_percent.map(|g| format!("{g:+.1}")),
                     "%",
                 );
-                let target = match status.control {
-                    Control::None => None,
-                    _ => status.target_w.map(|w| w.to_string()),
-                };
-                metric(ui, "Target", target, "W");
+                // With road feel the trainer sets the power from the road itself: no target.
+                if !(status.road_feel && status.control == Control::Simulation) {
+                    let target = match status.control {
+                        Control::None => None,
+                        _ => status.target_w.map(|w| w.to_string()),
+                    };
+                    metric(ui, "Target", target, "W");
+                }
                 let control = match status.control {
                     Control::None => "–",
                     Control::Simulation => "Road",
