@@ -1,6 +1,6 @@
 //! Settings tab: how OsmolControl works with MyWhoosh, rider mass, network and Bluetooth.
 use crate::{MUTED, WARN};
-use bike_session::{Mode, Settings};
+use bike_session::{Mode, Settings, ShiftFeel};
 use eframe::egui::{self, RichText};
 use std::net::Ipv4Addr;
 
@@ -92,6 +92,17 @@ pub fn show(
                         }
                     });
                 }
+            });
+            ui.end_row();
+
+            ui.label("Shift feel")
+                .on_hover_text("How OsmolControl gears drive the trainer.");
+            ui.vertical(|ui| {
+                for feel in ShiftFeel::ALL {
+                    ui.radio_value(&mut settings.shift_feel, feel, feel.label())
+                        .on_hover_text(feel.description());
+                }
+                ui.label(RichText::new(settings.shift_feel.description()).color(MUTED));
             });
             ui.end_row();
 

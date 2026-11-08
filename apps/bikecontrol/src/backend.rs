@@ -78,7 +78,8 @@ impl Backend {
             s.gear = gear;
             s.control = bike_session::Control::Simulation;
             s.grade_percent = Some(2.4);
-            s.target_w = Some(185);
+            s.real_chain = Some(2.46);
+            s.road_feel = true;
         });
     }
 

@@ -98,7 +98,16 @@ replaces OsmolControl and the launcher.
      the Power Source (trainer).
    - MyWhoosh on the same Linux PC (installed by `install.sh`): tap **BLE** and choose
      **OsmolControl** as the Power Source.
-   - **Heart rate:** put the strap on (moisten the electrodes) *before* pressing Start ride;
+   - **Shift feel:** *Road* (default) lets the trainer simulate the road itself, made steeper
+  for harder gears and flatter for easier ones. The trainer reacts to its own flywheel at
+  once, so every shift is felt immediately and speeding up or slowing down feels like a real
+  bike. OsmolControl learns which gear your chain really sits in on the trainer from the
+  first few seconds of steady pedalling (the Log shows it as *Real gear on the trainer*);
+  until then the gears use power targets. Keep the chain in a middle gear; if you move it on
+  the bike, the new gear is picked up after a few seconds of steady pedalling. *Power target* holds the watts each gear needs at your
+  cadence, like ERG: smoother but softer shifts. Use it for trainers that cannot simulate a
+  road (OsmolControl also switches to it by itself when the trainer refuses).
+- **Heart rate:** put the strap on (moisten the electrodes) *before* pressing Start ride;
      OsmolControl looks for it once, right after the controller, if *Use a heart rate strap* is
      on in Settings. On Linux pick **OsmolControl
      HR** as the Heart Rate source under **BLE**. Over LAN MyWhoosh may offer **OsmolControl**

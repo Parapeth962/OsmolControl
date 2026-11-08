@@ -235,6 +235,13 @@ impl eframe::App for App {
             return;
         }
         let running = self.backend.running();
+        // Remember the real gear on the trainer, so the next ride has road feel from the start.
+        if !self.demo
+            && let Some(m) = status.real_chain_m
+            && self.settings.real_chain_m != Some(m)
+        {
+            self.settings.real_chain_m = Some(m);
+        }
         // Keyboard shifting while the window has focus.
         let (up, down) = ctx.input(|i| {
             (

@@ -3,9 +3,10 @@
 use anyhow::Result;
 use bike_ble::trainer::Snapshot;
 use bike_dircon::{Characteristic, Gatt, Service, gatt, sig};
-use bike_gearing::{Gear, Simulation, VirtualShifter};
+use bike_gearing::{Gear, RealChain, Simulation, VirtualShifter};
 use bike_protocol::Action;
 use bike_protocol::ftms_control::{self, Verdict};
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, watch};
 use uuid::Uuid;
@@ -50,6 +51,23 @@ pub fn mirror(snapshot: &Snapshot) -> Gatt {
     Gatt { services }
 }
 
+/// Whether the trainer advertises Indoor Bike Simulation (FTMS Feature 2ACC: target setting
+/// features in bytes 4..8, bit 13). An unreadable feature table counts as yes; a trainer that
+/// then refuses the road is switched to power targets.
+pub fn simulates_road(snapshot: &Snapshot) -> bool {
+    let Some(feature) = snapshot
+        .characteristics
+        .iter()
+        .find(|c| c.uuid == sig(0x2acc))
+    else {
+        return true;
+    };
+    match feature.value.get(4..8) {
+        Some(&[a, b, c, d]) => u32::from_le_bytes([a, b, c, d]) & (1 << 13) != 0,
+        _ => true,
+    }
+}
+
 pub const HEART_RATE_MEASUREMENT: Uuid = sig(0x2a37);
 
 /// Heart Rate service carrying the strap's measurements unchanged.
@@ -64,19 +82,52 @@ pub fn heart_rate_service() -> Service {
     }
 }
 
-use crate::{Control as Mode, GearInfo, StatusTx};
+use crate::{Control as Mode, GearInfo, ShiftFeel, StatusTx};
+
+/// Road changes smaller than this share of the load are not sent: below what a rider feels
+/// (every gear step is several times larger), and they would only rock the load with sensor noise.
+const LOAD_DEADBAND: f64 = 0.015;
+/// Speed the load is compared at when the trainer is slower, so a shift while standing still
+/// is sent too.
+const MIN_COMPARE_MPS: f64 = 2.0;
+
+/// Whether `next` would ask the trainer for what `last` already did, as felt at `speed_mps`.
+fn same_command(last: &[u8], next: &[u8], speed_mps: f64, mass_kg: f64) -> bool {
+    match (Simulation::from_ftms(last), Simulation::from_ftms(next)) {
+        (Some(a), Some(b)) => {
+            let v = speed_mps.max(MIN_COMPARE_MPS);
+            let (pa, pb) = (a.power_w(v, mass_kg), b.power_w(v, mass_kg));
+            (pa - pb).abs() <= LOAD_DEADBAND * pa.max(pb) + 0.2
+        }
+        _ => last == next,
+    }
+}
 
 /// Cadence older than this is treated as unknown (the rider stopped or the trainer went quiet).
 const CADENCE_MAX_AGE: Duration = crate::TELEMETRY_MAX_AGE;
+/// Cadence readings kept for the median: one odd reading (a 0 or a spike between two normal
+/// ones) is ignored instead of moving the power target, which rises roughly with its cube.
+const CADENCE_SAMPLES: usize = 3;
+/// Trainer speed readings averaged for the road sent to it (2 s at 4 Hz). The speed only matters
+/// there for air drag beyond what FTMS can carry, which changes slowly; averaging keeps sensor
+/// noise from rocking the load.
+const SPEED_SAMPLES: usize = 8;
 
 /// Pure routing between the app, the trainer and the virtual drivetrain.
 pub struct Router {
     limits: ftms_control::Limits,
     shifter: Option<VirtualShifter>,
+    feel: ShiftFeel,
+    /// The rider's real gear on the trainer; known once they pedal steadily.
+    chain: Option<RealChain>,
     mode: Mode,
-    cadence: Option<(f64, Instant)>,
+    /// Latest cadence readings, oldest first.
+    cadence: VecDeque<(f64, Instant)>,
+    /// Latest trainer wheel speeds, km/h, oldest first.
+    speed: VecDeque<(f64, Instant)>,
     last_tick: Option<Instant>,
-    last_sent_w: Option<i16>,
+    /// The last gear command sent, so an unchanged one is not repeated.
+    last_sent: Option<Vec<u8>>,
 }
 
 /// Outcome of an app write: commands for the trainer and notifications for the app.
@@ -87,15 +138,34 @@ pub struct Routed {
 }
 
 impl Router {
+    /// Gears are felt as a road (see [`ShiftFeel::Road`]) unless [`Self::with_feel`] says otherwise.
     pub fn new(limits: ftms_control::Limits, shifter: Option<VirtualShifter>) -> Self {
+        let chain = shifter
+            .as_ref()
+            .map(|s| RealChain::new(s.drivetrain().wheel_circumference_mm));
         Self {
             limits,
             shifter,
+            feel: ShiftFeel::Road,
+            chain,
             mode: Mode::None,
-            cadence: None,
+            cadence: VecDeque::with_capacity(CADENCE_SAMPLES),
+            speed: VecDeque::with_capacity(SPEED_SAMPLES),
             last_tick: None,
-            last_sent_w: None,
+            last_sent: None,
         }
+    }
+
+    pub fn with_feel(mut self, feel: ShiftFeel) -> Self {
+        self.feel = feel;
+        self
+    }
+
+    /// Start from the real chain learned on an earlier ride, so the road is felt from the first
+    /// pedal stroke. It is still checked while riding.
+    pub fn with_real_chain(mut self, ratio: Option<f64>) -> Self {
+        self.chain = self.chain.map(|c| c.with_ratio(ratio));
+        self
     }
 
     pub fn shifter(&self) -> Option<&VirtualShifter> {
@@ -104,6 +174,27 @@ impl Router {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    pub fn feel(&self) -> ShiftFeel {
+        self.feel
+    }
+
+    /// The rider's real gear on the trainer (chainring/cog), once learned.
+    pub fn real_chain(&self) -> Option<f64> {
+        self.chain.as_ref()?.ratio()
+    }
+
+    /// [`Self::real_chain`] as metres per crank revolution.
+    pub fn real_chain_m(&self) -> Option<f64> {
+        let wheel = self.shifter.as_ref()?.drivetrain().wheel_circumference_mm;
+        Some(self.real_chain()? * f64::from(wheel) / 1000.0)
+    }
+
+    /// Whether the trainer simulates the road for the gear itself (rather than holding a
+    /// power target computed from the cadence).
+    pub fn road_feel_active(&self) -> bool {
+        self.feel == ShiftFeel::Road && self.shifter.is_some() && self.real_chain().is_some()
     }
 
     pub fn gear_info(&self) -> Option<GearInfo> {
@@ -127,7 +218,7 @@ impl Router {
             && let Some(shifter) = &mut self.shifter
             && let Some(simulation) = Simulation::from_ftms(&command)
         {
-            // Consumed here: the trainer receives gear-aware power targets instead.
+            // Consumed here: the trainer receives the gears' road or power targets instead.
             shifter.set_simulation(simulation);
             self.mode = Mode::Simulation;
             let ok = vec![ftms_control::RESPONSE, op, ftms_control::RESULT_SUCCESS];
@@ -142,7 +233,9 @@ impl Router {
                 self.enter(Mode::Target)
             }
             ftms_control::RESET => self.enter(Mode::None),
-            _ => {}
+            // Request Control, Start or Stop from the app: some trainers drop their target on
+            // these, so the gears' command is sent again instead of waiting for it to change.
+            _ => self.last_sent = None,
         }
         tracing::debug!(command = %bike_protocol::hex(&command), "control command relayed");
         Routed {
@@ -153,29 +246,62 @@ impl Router {
 
     fn enter(&mut self, mode: Mode) {
         self.mode = mode;
-        self.last_sent_w = None;
+        self.last_sent = None;
         if let Some(s) = &mut self.shifter {
             s.clear_simulation();
         }
     }
 
-    /// Track cadence; hide trainer replies to OsmolControl's own power targets from the app.
+    /// Track cadence, speed and the real chain; hide trainer replies to OsmolControl's own
+    /// commands from the app. A trainer that refuses the gears' road gets power targets instead.
     pub fn trainer_notification(&mut self, uuid: Uuid, value: &[u8], now: Instant) -> bool {
         if uuid == sig(INDOOR_BIKE_DATA)
             && let Ok(v) = bike_protocol::indoor_bike(value)
-            && let Some(rpm) = v.get("cadence_rpm").and_then(serde_json::Value::as_f64)
         {
-            self.cadence = Some((rpm, now));
+            let num = |k: &str| v.get(k).and_then(serde_json::Value::as_f64);
+            if let Some(rpm) = num("cadence_rpm") {
+                if self.cadence.len() == CADENCE_SAMPLES {
+                    self.cadence.pop_front();
+                }
+                self.cadence.push_back((rpm, now));
+            }
+            if let Some(kmh) = num("speed_kmh") {
+                if self.speed.len() == SPEED_SAMPLES {
+                    self.speed.pop_front();
+                }
+                self.speed.push_back((kmh, now));
+            }
+            if let (Some(chain), Some(kmh), Some(rpm)) =
+                (&mut self.chain, num("speed_kmh"), num("cadence_rpm"))
+            {
+                chain.observe(kmh, rpm);
+            }
         }
         let injected = self.mode == Mode::Simulation && self.shifter.is_some();
         let own_reply = uuid == sig(CONTROL_POINT)
-            && value.starts_with(&[ftms_control::RESPONSE, ftms_control::SET_TARGET_POWER]);
-        // FTMS Machine Status 0x08 = "target power changed".
-        let own_status = uuid == sig(MACHINE_STATUS) && value.first() == Some(&0x08);
+            && value.first() == Some(&ftms_control::RESPONSE)
+            && matches!(
+                value.get(1),
+                Some(&(ftms_control::SET_TARGET_POWER | ftms_control::SET_SIMULATION))
+            );
+        if injected
+            && own_reply
+            && value.get(1) == Some(&ftms_control::SET_SIMULATION)
+            && value.get(2) != Some(&ftms_control::RESULT_SUCCESS)
+            && self.feel == ShiftFeel::Road
+        {
+            tracing::warn!(reply = %bike_protocol::hex(value), "trainer refused the gears' road");
+            self.feel = ShiftFeel::Power;
+            self.last_sent = None;
+        }
+        // FTMS Machine Status 0x08 = "target power changed", 0x12 = "simulation changed".
+        let own_status =
+            uuid == sig(MACHINE_STATUS) && matches!(value.first(), Some(&(0x08 | 0x12)));
         !(injected && (own_reply || own_status))
     }
 
-    /// Periodic power target in virtual-shifting mode.
+    /// Periodic gear command in virtual-shifting mode: the road for the trainer to simulate,
+    /// or a power target until the real chain is known (or with [`ShiftFeel::Power`]).
     pub fn tick(&mut self, now: Instant) -> Option<Vec<u8>> {
         let dt = self
             .last_tick
@@ -184,22 +310,86 @@ impl Router {
         if self.mode != Mode::Simulation {
             return None;
         }
-        let cadence = self
-            .cadence
-            .filter(|(_, at)| now.duration_since(*at) <= CADENCE_MAX_AGE)
-            .map(|(rpm, _)| rpm);
+        let command = match self.road_command(now) {
+            Some(command) => command,
+            None => self.power_command(now, dt)?,
+        };
+        let mass = self.shifter.as_ref().map_or(0.0, VirtualShifter::mass_kg);
+        let speed = self.trainer_speed(now);
+        if self
+            .last_sent
+            .as_deref()
+            .is_some_and(|last| same_command(last, &command, speed, mass))
+        {
+            return None;
+        }
+        self.last_sent = Some(command.clone());
+        Some(command)
+    }
+
+    fn road_command(&self, now: Instant) -> Option<Vec<u8>> {
+        if !self.road_feel_active() {
+            return None;
+        }
+        let speed = self.trainer_speed(now);
+        let road = self
+            .shifter
+            .as_ref()?
+            .trainer_road(self.real_chain()?, speed)?;
+        match ftms_control::filter(&road.to_ftms(), &self.limits) {
+            Verdict::Forward(command) => Some(command),
+            Verdict::Reject(_) => None,
+        }
+    }
+
+    /// Average of the fresh trainer speed readings, m/s; 0 without any.
+    fn trainer_speed(&self, now: Instant) -> f64 {
+        let fresh: Vec<f64> = self
+            .speed
+            .iter()
+            .filter(|(_, at)| now.saturating_duration_since(*at) <= CADENCE_MAX_AGE)
+            .map(|(kmh, _)| *kmh)
+            .collect();
+        if fresh.is_empty() {
+            0.0
+        } else {
+            fresh.iter().sum::<f64>() / fresh.len() as f64 / 3.6
+        }
+    }
+
+    fn power_command(&mut self, now: Instant, dt: f64) -> Option<Vec<u8>> {
+        let cadence = self.cadence(now);
         let target = self.shifter.as_mut()?.update(cadence, dt)?;
         // Bounded by the clamp and the trainer range below; rounding to whole watts.
         let watts = target.round().clamp(0.0, f64::from(i16::MAX)) as i16;
-        if self.last_sent_w == Some(watts) {
-            return None;
-        }
-        self.last_sent_w = Some(watts);
         let [a, b] = watts.to_le_bytes();
         match ftms_control::filter(&[ftms_control::SET_TARGET_POWER, a, b], &self.limits) {
             Verdict::Forward(command) => Some(command),
             Verdict::Reject(_) => None,
         }
+    }
+
+    /// Median of the fresh cadence readings; `None` once the trainer has not reported cadence
+    /// for [`CADENCE_MAX_AGE`].
+    pub fn cadence(&self, now: Instant) -> Option<f64> {
+        let mut fresh: Vec<f64> = self
+            .cadence
+            .iter()
+            .filter(|(_, at)| now.saturating_duration_since(*at) <= CADENCE_MAX_AGE)
+            .map(|(rpm, _)| *rpm)
+            .collect();
+        fresh.sort_by(f64::total_cmp);
+        fresh.get(fresh.len() / 2).copied()
+    }
+
+    /// Whether the trainer has reported cadence at all during this ride.
+    fn ever_had_cadence(&self) -> bool {
+        !self.cadence.is_empty()
+    }
+
+    /// The last target did not reach the trainer: send it again on the next tick.
+    fn forget_sent(&mut self) {
+        self.last_sent = None;
     }
 
     /// Returns the new gear if it changed.
@@ -209,7 +399,12 @@ impl Router {
             Action::ShiftUp => true,
             Action::ShiftDown => false,
         };
-        shifter.shift(harder).then(|| shifter.gear())
+        let moved = shifter.shift(harder);
+        if moved {
+            // Every shift reaches the trainer, however close the next gear's ratio is.
+            self.last_sent = None;
+        }
+        moved.then(|| shifter.gear())
     }
 }
 
@@ -233,6 +428,10 @@ fn publish(router: &Router, status: &StatusTx, grade: Option<f64>, target: Optio
             s.target_w = target;
         }
         s.gear = router.gear_info();
+        s.real_chain = router.real_chain();
+        s.real_chain_m = router.real_chain_m();
+        s.road_feel = router.road_feel_active();
+        s.shift_feel = router.feel();
     });
 }
 
@@ -259,6 +458,8 @@ pub async fn run(
 ) -> Result<()> {
     publish(&router, &ch.status, None, None);
     let mut ticker = tokio::time::interval(TICK);
+    let mut cadence_lost = false;
+    let mut told = Told::default();
     loop {
         tokio::select! {
             _ = stop.changed() => return Ok(()),
@@ -286,6 +487,7 @@ pub async fn run(
                         Mode::None => "MyWhoosh released the trainer; gears paused.",
                     });
                 }
+                let relayed = !routed.to_trainer.is_empty();
                 for c in routed.to_trainer {
                     send(&ch.to_trainer, c);
                 }
@@ -293,6 +495,10 @@ pub async fn run(
                     let _ = ch.to_app.send(n);
                 }
                 publish(&router, &ch.status, grade, target);
+                if relayed && router.mode() == Mode::Simulation && router.shifter().is_some() {
+                    // Queued behind the relayed command, so the trainer ends on the gears' target.
+                    power_target(&mut router, &ch);
+                }
             }
             n = ch.from_trainer.recv() => match n {
                 Ok((uuid, value)) => {
@@ -302,6 +508,7 @@ pub async fn run(
                     if router.trainer_notification(uuid, &value, Instant::now()) {
                         let _ = ch.to_app.send((uuid, value));
                     }
+                    feel_news(&router, &ch.status, &mut told);
                 }
                 Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(broadcast::error::RecvError::Closed) => return Ok(()),
@@ -316,36 +523,146 @@ pub async fn run(
                     ticker.reset();
                 }
             }
-            _ = ticker.tick() => power_target(&mut router, &ch),
+            _ = ticker.tick() => {
+                power_target(&mut router, &ch);
+                // The trainer simulating the road needs no cadence; power targets do.
+                let lost = router.mode() == Mode::Simulation
+                    && !router.road_feel_active()
+                    && router.ever_had_cadence()
+                    && router.cadence(Instant::now()).is_none();
+                if lost != cadence_lost && router.shifter().is_some() {
+                    cadence_lost = lost;
+                    crate::log(&ch.status, if lost {
+                        "No cadence from the trainer for 3 s; resistance eased until it is back."
+                    } else {
+                        "Cadence from the trainer is back."
+                    });
+                }
+            }
         }
     }
 }
 
-fn send(tx: &mpsc::Sender<Vec<u8>>, command: Vec<u8>) {
-    if tx.try_send(command).is_err() {
-        tracing::warn!("trainer busy; control command dropped");
-    }
+/// What the log has said about how the gears drive the trainer.
+#[derive(Default)]
+struct Told {
+    chain: Option<f64>,
+    feel: Option<ShiftFeel>,
 }
 
-/// Send the router's next power target to the trainer, if any.
+fn feel_news(router: &Router, status: &StatusTx, told: &mut Told) {
+    if router.shifter().is_none() {
+        return;
+    }
+    if told.feel == Some(ShiftFeel::Road) && router.feel() == ShiftFeel::Power {
+        crate::log(
+            status,
+            "The trainer refused the simulated road; gears use power targets instead.",
+        );
+        status.send_modify(|s| {
+            s.shift_feel = ShiftFeel::Power;
+            s.road_feel = false;
+        });
+    }
+    told.feel = Some(router.feel());
+    let chain = router.real_chain();
+    if router.feel() == ShiftFeel::Road
+        && let Some(ratio) = chain
+        && chain != told.chain
+    {
+        crate::log(
+            status,
+            if told.chain.is_none() {
+                format!(
+                    "Real gear on the trainer: ratio {ratio:.2}. The trainer now simulates the \
+                     road for each virtual gear, so shifts are felt at once."
+                )
+            } else {
+                format!("Real gear on the trainer changed: ratio {ratio:.2}.")
+            },
+        );
+        if let Some(hint) = router.shifter().and_then(|s| chain_hint(s, ratio)) {
+            crate::log(status, hint);
+        }
+        status.send_modify(|s| {
+            s.real_chain = chain;
+            s.real_chain_m = router.real_chain_m();
+            s.road_feel = router.road_feel_active();
+        });
+    }
+    told.chain = chain;
+}
+
+/// How far the real chain may sit from the middle of the virtual range before the ends of the
+/// range suffer: the trainer's grade limit caps the hardest gears, its minimum resistance the
+/// easiest ones.
+const CHAIN_SPREAD: f64 = 1.5;
+
+/// Advice when the real chain sits far from the middle of the virtual gears.
+fn chain_hint(shifter: &VirtualShifter, real: f64) -> Option<String> {
+    let gears = shifter.drivetrain().gears();
+    let (first, last) = (gears.first()?, gears.last()?);
+    let middle = (first.ratio * last.ratio).sqrt();
+    let side = if real < middle / CHAIN_SPREAD {
+        "an easy"
+    } else if real > middle * CHAIN_SPREAD {
+        "a hard"
+    } else {
+        return None;
+    };
+    let example = gears.iter().min_by(|a, b| {
+        (a.ratio - middle)
+            .abs()
+            .total_cmp(&(b.ratio - middle).abs())
+    })?;
+    Some(format!(
+        "Your chain sits in {side} gear on the trainer (ratio {real:.2}). For the hardest and \
+         easiest virtual gears to feel right, move it to a middle one, such as {}x{} \
+         (ratio {:.2}), and leave it there.",
+        example.chainring, example.cog, example.ratio
+    ))
+}
+
+/// False when the command was dropped because the trainer link is backed up.
+fn send(tx: &mpsc::Sender<Vec<u8>>, command: Vec<u8>) -> bool {
+    let sent = tx.try_send(command).is_ok();
+    if !sent {
+        tracing::warn!("trainer busy; control command dropped");
+    }
+    sent
+}
+
+/// Send the router's next gear command (road or power target) to the trainer, if any.
 fn power_target(router: &mut Router, ch: &Channels) {
     let Some(c) = router.tick(Instant::now()) else {
         return;
     };
-    let target = i16::from_le_bytes([c[1], c[2]]);
+    let target = match c[..] {
+        [ftms_control::SET_TARGET_POWER, a, b] => Some(i16::from_le_bytes([a, b])),
+        _ => None,
+    };
     {
         let s = ch.status.borrow();
         tracing::debug!(
-            target,
+            command = %bike_protocol::hex(&c),
             power = ?s.power_w,
             cadence = ?s.cadence_rpm,
             grade = ?s.grade_percent,
             gear = ?s.gear.as_ref().map(|g| g.number),
-            "power target"
+            real_chain = ?router.real_chain(),
+            "gear command"
         );
     }
-    send(&ch.to_trainer, c);
-    publish(router, &ch.status, None, Some(target));
+    if !send(&ch.to_trainer, c) {
+        // Not deduplicated against a command the trainer never got.
+        router.forget_sent();
+        return;
+    }
+    publish(router, &ch.status, None, target);
+    if target.is_none() {
+        // The trainer sets the power itself from the road.
+        ch.status.send_modify(|s| s.target_w = None);
+    }
 }
 
 /// Next fresh controller action; pends forever without a controller.
@@ -584,6 +901,193 @@ mod tests {
         assert_eq!(watts(r.tick(t0)), 150);
         assert_eq!(r.tick(t0), None, "an unchanged target is not resent");
         assert_eq!(r.shift(Action::ShiftUp), None, "already in the top gear");
+    }
+
+    /// Indoor Bike Data with only instantaneous speed and cadence.
+    fn cadence_frame(rpm: f64) -> Vec<u8> {
+        let [a, b] = ((rpm * 2.0) as u16).to_le_bytes();
+        vec![0x04, 0, 0, 0, a, b]
+    }
+
+    #[test]
+    fn one_odd_cadence_reading_does_not_move_the_load() {
+        let mut r = router(true);
+        let t0 = Instant::now();
+        r.app_write(&SIM);
+        let feed = |r: &mut Router, rpm, ms| {
+            r.trainer_notification(
+                sig(INDOOR_BIKE_DATA),
+                &cadence_frame(rpm),
+                t0 + Duration::from_millis(ms),
+            );
+        };
+        for (i, rpm) in [90.0, 90.0, 90.0].into_iter().enumerate() {
+            feed(&mut r, rpm, 250 * i as u64);
+        }
+        let steady = watts(r.tick(t0 + Duration::from_millis(500)));
+        // A dropout to 0 and a spike between normal readings: the target stays put.
+        feed(&mut r, 0.0, 750);
+        assert_eq!(r.cadence(t0 + Duration::from_millis(750)), Some(90.0));
+        assert_eq!(r.tick(t0 + Duration::from_millis(750)), None);
+        feed(&mut r, 90.0, 1000);
+        feed(&mut r, 180.0, 1250);
+        assert_eq!(r.tick(t0 + Duration::from_millis(1250)), None);
+        // Stopping for real still eases off after two readings.
+        feed(&mut r, 0.0, 1500);
+        feed(&mut r, 0.0, 1750);
+        assert!(watts(r.tick(t0 + Duration::from_millis(1750))) < steady);
+    }
+
+    #[test]
+    fn target_is_sent_again_after_app_commands_and_dropped_writes() {
+        let mut r = router(true);
+        let t0 = Instant::now();
+        r.trainer_notification(sig(INDOOR_BIKE_DATA), &PEDALLING, t0);
+        r.app_write(&SIM);
+        let target = watts(r.tick(t0));
+        assert_eq!(r.tick(t0), None);
+        // MyWhoosh's Request Control and Start go to the trainer, then the same target again.
+        for command in [
+            [ftms_control::REQUEST_CONTROL],
+            [ftms_control::START_OR_RESUME],
+        ] {
+            assert_eq!(r.app_write(&command).to_trainer, vec![command.to_vec()]);
+            assert_eq!(r.mode(), Mode::Simulation);
+            assert_eq!(watts(r.tick(t0)), target);
+            assert_eq!(r.tick(t0), None);
+        }
+        r.forget_sent();
+        assert_eq!(watts(r.tick(t0)), target);
+    }
+
+    /// Six seconds of steady pedalling: the real chain is learned.
+    fn ride_steadily(r: &mut Router, t0: Instant) -> Instant {
+        let mut now = t0;
+        for _ in 0..30 {
+            r.trainer_notification(sig(INDOOR_BIKE_DATA), &PEDALLING, now);
+            now += Duration::from_millis(250);
+        }
+        now
+    }
+
+    fn grade(command: Option<Vec<u8>>) -> i16 {
+        let c = command.unwrap_or_else(|| panic!("no road for the trainer"));
+        assert_eq!(c[0], ftms_control::SET_SIMULATION, "{c:?}");
+        i16::from_le_bytes([c[3], c[4]])
+    }
+
+    #[test]
+    fn road_feel_sends_a_steeper_road_for_harder_gears() {
+        let mut r = router(true);
+        let t0 = Instant::now();
+        r.app_write(&SIM);
+        // Until the real chain is known, power targets keep the gears working.
+        r.trainer_notification(sig(INDOOR_BIKE_DATA), &PEDALLING, t0);
+        watts(r.tick(t0));
+        let now = ride_steadily(&mut r, t0);
+        assert!(r.road_feel_active());
+        assert!(r.real_chain().is_some_and(|c| (c - 2.448).abs() < 0.01));
+        let base = grade(r.tick(now));
+        assert_eq!(r.tick(now), None, "an unchanged road is not resent");
+        assert!(r.shift(Action::ShiftUp).is_some());
+        let harder = grade(r.tick(now));
+        assert!(harder > base, "{harder} <= {base}");
+        assert!(r.shift(Action::ShiftDown).is_some() && r.shift(Action::ShiftDown).is_some());
+        assert!(grade(r.tick(now)) < base);
+        // A new road from MyWhoosh goes through the gear as well.
+        r.app_write(&[0x11, 0, 0, 0x2c, 0x01, 0x35, 0x33]);
+        assert!(grade(r.tick(now)) > base);
+        // The trainer's answers to our road are not passed to MyWhoosh.
+        assert!(!r.trainer_notification(sig(CONTROL_POINT), &[0x80, 0x11, 0x01], now));
+        assert!(!r.trainer_notification(sig(MACHINE_STATUS), &[0x12, 0, 0], now));
+        // Stopping pedalling does not matter: the trainer keeps simulating the road.
+        let later = now + Duration::from_secs(10);
+        assert!(
+            r.tick(later)
+                .is_none_or(|c| c[0] == ftms_control::SET_SIMULATION),
+            "no power target, no easing off"
+        );
+        assert!(r.road_feel_active());
+    }
+
+    #[test]
+    fn a_trainer_refusing_the_road_gets_power_targets() {
+        let mut r = router(true);
+        let t0 = Instant::now();
+        r.app_write(&SIM);
+        let now = ride_steadily(&mut r, t0);
+        grade(r.tick(now));
+        assert!(!r.trainer_notification(sig(CONTROL_POINT), &[0x80, 0x11, 0x02], now));
+        assert_eq!(r.feel(), ShiftFeel::Power);
+        watts(r.tick(now));
+        // Power feel never sends a road.
+        let mut p = router(true).with_feel(ShiftFeel::Power);
+        p.app_write(&SIM);
+        let now = ride_steadily(&mut p, t0);
+        watts(p.tick(now));
+        assert!(!p.road_feel_active());
+    }
+
+    #[test]
+    fn road_support_is_read_from_the_feature_table() {
+        let snapshot = |value: Vec<u8>| Snapshot {
+            name: "t".into(),
+            limits: ftms_control::Limits::FALLBACK,
+            characteristics: vec![MirroredCharacteristic {
+                value,
+                ..ch(0x1826, 0x2acc, true, false, false, false)
+            }],
+        };
+        // Captured X2 Max features: target settings 0x0000A00C, simulation bit set.
+        assert!(simulates_road(&snapshot(vec![
+            0x03, 0x40, 0, 0, 0x0c, 0xa0, 0, 0
+        ])));
+        assert!(!simulates_road(&snapshot(vec![
+            0x03, 0x40, 0, 0, 0x0c, 0x80, 0, 0
+        ])));
+        assert!(simulates_road(&snapshot(vec![])), "unreadable: try it");
+    }
+
+    #[test]
+    fn load_changes_too_small_to_feel_are_not_resent() {
+        let road = |g: i16, cw: u8| {
+            let [a, b] = g.to_le_bytes();
+            [0x11, 0, 0, a, b, 0x35, cw]
+        };
+        // 5 % at 3 m/s: about 5 W of 140 W.
+        assert!(same_command(&road(500, 51), &road(503, 51), 3.0, 84.0));
+        assert!(!same_command(&road(500, 51), &road(530, 51), 3.0, 84.0));
+        assert!(!same_command(&road(0, 51), &road(0, 80), 9.0, 84.0));
+        // Every shift is sent, even standing still and between near-equal 2x ratios.
+        let mut r = router(true).with_real_chain(Some(2.4));
+        let t0 = Instant::now();
+        r.app_write(&SIM);
+        while r.shift(Action::ShiftDown).is_some() {}
+        assert!(r.tick(t0).is_some());
+        while r.shift(Action::ShiftUp).is_some() {
+            assert!(r.tick(t0).is_some(), "gear {:?}", r.gear_info());
+        }
+        assert!(!same_command(&[0x05, 100, 0], &[0x05, 101, 0], 3.0, 84.0));
+        assert!(same_command(&[0x05, 100, 0], &[0x05, 100, 0], 3.0, 84.0));
+    }
+
+    #[test]
+    fn a_chain_far_from_the_middle_gets_advice() {
+        let r = router(true);
+        let s = r.shifter().unwrap_or_else(|| panic!("shifter"));
+        let gears = s.drivetrain().gears();
+        let middle = (gears[0].ratio * gears[gears.len() - 1].ratio).sqrt();
+        assert_eq!(chain_hint(s, middle), None);
+        let easy = chain_hint(s, middle / 2.0).unwrap_or_default();
+        assert!(easy.contains("an easy gear"), "{easy}");
+        let hard = chain_hint(s, middle * 2.0).unwrap_or_default();
+        assert!(hard.contains("a hard gear"), "{hard}");
+        // The suggested gear is one of the rider's own.
+        assert!(
+            gears
+                .iter()
+                .any(|g| hard.contains(&format!("{}x{}", g.chainring, g.cog)))
+        );
     }
 
     #[test]

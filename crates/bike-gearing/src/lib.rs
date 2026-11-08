@@ -6,7 +6,7 @@ use serde::Serialize;
 
 mod shifting;
 mod templates;
-pub use shifting::{Simulation, VirtualShifter};
+pub use shifting::{RealChain, Simulation, VirtualShifter};
 pub use templates::{Brand, Filter, TEMPLATES, Template, template};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
